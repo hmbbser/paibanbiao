@@ -353,8 +353,8 @@ function Timeline({ user, accounts, bookings, onEdit }: { user: User; accounts: 
 
       <div className="scheduler">
         <div className="time-head account-head">账号小窝</div>
-        {Array.from({ length: 8 }, (_, index) => (
-          <div className="time-head" key={index}>{String(index * 3).padStart(2, '0')}:00</div>
+        {Array.from({ length: 24 }, (_, index) => (
+          <div className="time-head" key={index}>{String(index).padStart(2, '0')}:00</div>
         ))}
         {accounts.map((account) => {
           const rowBookings = activeBookings.filter((booking) => booking.account_id === account.id);
@@ -366,6 +366,7 @@ function Timeline({ user, accounts, bookings, onEdit }: { user: User; accounts: 
                 <small>{account.remark || '暂无备注，可安心排班'}</small>
               </div>
               <div className="timeline-row">
+                {Array.from({ length: 24 }, (_, index) => <span className="hour-cell" key={index} />)}
                 {rowBookings.length === 0 && <div className="empty-slot"><Sparkles size={14} /> 今天还很空，可以安排啦</div>}
                 {rowBookings.map((booking) => {
                   const left = percentBetween(new Date(booking.starts_at), start, end);
@@ -546,6 +547,51 @@ function BookingDrawer({
 }
 
 function AccountsPanel({ user, accounts, refresh }: { user: User; accounts: Account[]; refresh: () => void }) {
+  const [modal, setModal] = useState<Account | 'new' | null>(null);
+  return (
+    <Panel
+      title="账号管理"
+      subtitle="管理可出租账号、密码和备注信息"
+      action={user.role === 'admin' && <button className="primary" onClick={() => setModal('new')}><Plus size={16} />添加账号</button>}
+    >
+      <div className="admin-toolbar">
+        <div className="searchbox table-search">
+          <Search size={16} />
+          <input placeholder="搜索账号..." />
+        </div>
+        <button className="soft-btn" onClick={refresh}><RefreshCw size={16} />刷新</button>
+      </div>
+      <div className="admin-table">
+        <div className="admin-table-head account-table">
+          <span>名称</span>
+          <span>账号</span>
+          <span>密码</span>
+          <span>状态</span>
+          <span>备注</span>
+          <span>创建时间</span>
+          {user.role === 'admin' && <span>操作</span>}
+        </div>
+        {accounts.map((account) => (
+          <div className="admin-table-row account-table" key={account.id}>
+            <strong>{account.name}</strong>
+            <span>{account.login}</span>
+            <code>{account.password}</code>
+            <span className={`status-pill ${account.status === 'active' ? 'ok' : 'muted'}`}>{account.status === 'active' ? '正常' : '停用'}</span>
+            <span>{account.remark || '-'}</span>
+            <span>{formatDateTime(account.created_at)}</span>
+            {user.role === 'admin' && (
+              <div className="row-actions">
+                <button className="ghost-action" onClick={() => setModal(account)}>编辑</button>
+                <DeleteButton url={`/api/accounts/${account.id}`} refresh={refresh} />
+              </div>
+            )}
+          </div>
+        ))}
+        {accounts.length === 0 && <div className="empty-table">还没有账号，点击右上角“添加账号”开始。</div>}
+      </div>
+      {modal && <AccountModal account={modal === 'new' ? null : modal} onClose={() => setModal(null)} onSaved={() => { setModal(null); refresh(); }} />}
+    </Panel>
+  );
   const [form, setForm] = useState({ name: '', login: '', password: '', remark: '' });
   async function create(event: React.FormEvent) {
     event.preventDefault();
@@ -602,6 +648,45 @@ function UserPlusForm({ form, setForm, onSubmit }: { form: any; setForm: (next: 
 }
 
 function UsersPanel({ users, refresh }: { users: User[]; refresh: () => void }) {
+  const [modal, setModal] = useState<User | 'new' | null>(null);
+  return (
+    <Panel
+      title="用户管理"
+      subtitle="创建登录用户并控制角色和启用状态"
+      action={<button className="primary" onClick={() => setModal('new')}><UserPlus size={16} />添加用户</button>}
+    >
+      <div className="admin-toolbar">
+        <div className="searchbox table-search">
+          <Search size={16} />
+          <input placeholder="搜索用户..." />
+        </div>
+        <button className="soft-btn" onClick={refresh}><RefreshCw size={16} />刷新</button>
+      </div>
+      <div className="admin-table">
+        <div className="admin-table-head user-table">
+          <span>用户名</span>
+          <span>角色</span>
+          <span>状态</span>
+          <span>创建时间</span>
+          <span>操作</span>
+        </div>
+        {users.map((item) => (
+          <div className="admin-table-row user-table" key={item.id}>
+            <strong>{item.username}</strong>
+            <span>{item.role === 'admin' ? '管理员' : '普通用户'}</span>
+            <span className={`status-pill ${item.enabled ? 'ok' : 'muted'}`}>{item.enabled ? '启用' : '停用'}</span>
+            <span>{formatDateTime(item.created_at)}</span>
+            <div className="row-actions">
+              <button className="ghost-action" onClick={() => setModal(item)}>编辑</button>
+              <DeleteButton url={`/api/users/${item.id}`} refresh={refresh} />
+            </div>
+          </div>
+        ))}
+        {users.length === 0 && <div className="empty-table">还没有用户。</div>}
+      </div>
+      {modal && <UserModal user={modal === 'new' ? null : modal} onClose={() => setModal(null)} onSaved={() => { setModal(null); refresh(); }} />}
+    </Panel>
+  );
   const [form, setForm] = useState({ username: '', password: '', role: 'user' });
   async function create(event: React.FormEvent) {
     event.preventDefault();
@@ -644,6 +729,125 @@ function UsersPanel({ users, refresh }: { users: User[]; refresh: () => void }) 
         ))}
       </div>
     </Panel>
+  );
+}
+
+function AccountModal({ account, onClose, onSaved }: { account: Account | null; onClose: () => void; onSaved: () => void }) {
+  const [form, setForm] = useState({
+    name: account?.name || '',
+    login: account?.login || '',
+    password: account?.password || '',
+    remark: account?.remark || '',
+    status: account?.status || 'active'
+  });
+  const [error, setError] = useState('');
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setError('');
+    try {
+      await api(account ? `/api/accounts/${account.id}` : '/api/accounts', {
+        method: account ? 'PUT' : 'POST',
+        body: JSON.stringify(form)
+      });
+      onSaved();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop">
+      <section className="admin-modal">
+        <div className="modal-title">
+          <h2>{account ? '编辑账号' : '添加账号'}</h2>
+          <button className="icon-btn" onClick={onClose}><X size={18} /></button>
+        </div>
+        <form className="modal-form" onSubmit={submit}>
+          <Field label="账号名称" value={form.name} onChange={(name) => setForm({ ...form, name })} />
+          <div className="form-grid-2">
+            <Field label="登录账号" value={form.login} onChange={(login) => setForm({ ...form, login })} />
+            <Field label="密码" value={form.password} onChange={(password) => setForm({ ...form, password })} />
+          </div>
+          <label>
+            <span>状态</span>
+            <select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value })}>
+              <option value="active">正常</option>
+              <option value="disabled">停用</option>
+            </select>
+          </label>
+          <label>
+            <span>备注</span>
+            <textarea placeholder="请输入备注" value={form.remark} onChange={(event) => setForm({ ...form, remark: event.target.value })} />
+          </label>
+          {error && <div className="form-error">{error}</div>}
+          <div className="modal-actions">
+            <button type="button" className="soft-btn" onClick={onClose}>取消</button>
+            <button className="primary">{account ? '保存修改' : '添加账号'}</button>
+          </div>
+        </form>
+      </section>
+    </div>
+  );
+}
+
+function UserModal({ user, onClose, onSaved }: { user: User | null; onClose: () => void; onSaved: () => void }) {
+  const [form, setForm] = useState({
+    username: user?.username || '',
+    password: '',
+    role: user?.role || 'user',
+    enabled: user?.enabled ?? true
+  });
+  const [error, setError] = useState('');
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setError('');
+    try {
+      await api(user ? `/api/users/${user.id}` : '/api/users', {
+        method: user ? 'PUT' : 'POST',
+        body: JSON.stringify(form)
+      });
+      onSaved();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop">
+      <section className="admin-modal compact">
+        <div className="modal-title">
+          <h2>{user ? '编辑用户' : '添加用户'}</h2>
+          <button className="icon-btn" onClick={onClose}><X size={18} /></button>
+        </div>
+        <form className="modal-form" onSubmit={submit}>
+          <Field label="用户名" value={form.username} onChange={(username) => setForm({ ...form, username })} />
+          <Field label={user ? '新密码（留空不修改）' : '密码'} type="password" value={form.password} onChange={(password) => setForm({ ...form, password })} />
+          <div className="form-grid-2">
+            <label>
+              <span>角色</span>
+              <select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value as Role })}>
+                <option value="user">普通用户</option>
+                <option value="admin">管理员</option>
+              </select>
+            </label>
+            <label>
+              <span>状态</span>
+              <select value={form.enabled ? '1' : '0'} onChange={(event) => setForm({ ...form, enabled: event.target.value === '1' })}>
+                <option value="1">启用</option>
+                <option value="0">停用</option>
+              </select>
+            </label>
+          </div>
+          {error && <div className="form-error">{error}</div>}
+          <div className="modal-actions">
+            <button type="button" className="soft-btn" onClick={onClose}>取消</button>
+            <button className="primary">{user ? '保存修改' : '添加用户'}</button>
+          </div>
+        </form>
+      </section>
+    </div>
   );
 }
 
@@ -856,11 +1060,14 @@ function LegacySettingsPanel({ user }: { user: User }) {
   );
 }
 
-function Panel({ title, children, action }: { title: string; children: React.ReactNode; action?: React.ReactNode }) {
+function Panel({ title, subtitle, children, action }: { title: string; subtitle?: string; children: React.ReactNode; action?: React.ReactNode }) {
   return (
     <section className="panel-page">
       <div className="panel-title">
-        <h2>{title}</h2>
+        <div>
+          <h2>{title}</h2>
+          {subtitle && <p>{subtitle}</p>}
+        </div>
         {action}
       </div>
       {children}
@@ -914,7 +1121,18 @@ function addHours(date: Date, hours: number) {
 }
 
 function formatTime(value: string) {
-  return new Date(value).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+  return new Date(value).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
+function formatDateTime(value: string) {
+  return new Date(value).toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  });
 }
 
 createRoot(document.getElementById('root')!).render(<App />);
