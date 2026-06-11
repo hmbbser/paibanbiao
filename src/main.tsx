@@ -241,7 +241,7 @@ function Dashboard({
     onLogout();
   }
 
-  const visibleNav = navItems.filter((item) => !item.admin || user.role === 'admin');
+  const visibleNav = navItems.filter((item) => (!item.admin || user.role === 'admin') && (item.id !== 'settings' || user.role === 'admin'));
   const filteredBookings = overview.bookings.filter((booking) => {
     const text = `${booking.account_name} ${booking.renter_name} ${booking.renter_contact} ${booking.operator_name}`.toLowerCase();
     return text.includes(query.toLowerCase());
@@ -273,15 +273,7 @@ function Dashboard({
       <main className="workspace">
         <header className="topbar">
           <button className="icon-btn mobile-menu"><Menu size={18} /></button>
-          <div className="searchbox">
-            <Search size={16} />
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索账号、租客、手机号" />
-          </div>
-          <input className="date-input" type="date" defaultValue={new Date().toISOString().slice(0, 10)} />
-          <button className="primary" onClick={() => { setEditing(null); setDrawerOpen(true); }}>
-            <Plus size={16} />
-            新建出租
-          </button>
+          <div className="topbar-spacer" />
           <div className="user-pill">{user.role === 'admin' ? '管理员' : '普通用户'} · {user.username}</div>
           <button className="icon-btn" onClick={logout}><LogOut size={17} /></button>
         </header>
@@ -293,6 +285,9 @@ function Dashboard({
               user={user}
               accounts={overview.accounts}
               bookings={filteredBookings}
+              query={query}
+              onQuery={setQuery}
+              onNew={() => { setEditing(null); setDrawerOpen(true); }}
               onEdit={(booking) => { setEditing(booking); setDrawerOpen(true); }}
             />
           )}
@@ -323,7 +318,23 @@ function Dashboard({
   );
 }
 
-function Timeline({ user, accounts, bookings, onEdit }: { user: User; accounts: Account[]; bookings: Booking[]; onEdit: (booking: Booking) => void }) {
+function Timeline({
+  user,
+  accounts,
+  bookings,
+  query,
+  onQuery,
+  onNew,
+  onEdit
+}: {
+  user: User;
+  accounts: Account[];
+  bookings: Booking[];
+  query: string;
+  onQuery: (value: string) => void;
+  onNew: () => void;
+  onEdit: (booking: Booking) => void;
+}) {
   const today = new Date();
   const start = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 0, 0, 0);
   const end = new Date(start);
@@ -338,6 +349,19 @@ function Timeline({ user, accounts, bookings, onEdit }: { user: User; accounts: 
 
   return (
     <div className="timeline-view">
+      <div className="timeline-command">
+        <button className="icon-btn"><CalendarDays size={17} /></button>
+        <input className="date-input" type="date" defaultValue={new Date().toISOString().slice(0, 10)} />
+        <button className="soft-btn">今天</button>
+        <div className="searchbox timeline-search">
+          <Search size={16} />
+          <input value={query} onChange={(event) => onQuery(event.target.value)} placeholder="搜索账号 / 租客 / 手机号" />
+        </div>
+        <button className="primary" onClick={onNew}>
+          <Plus size={16} />
+          新建出租 ✨
+        </button>
+      </div>
       <div className="metrics">
         <Metric label="今日出租" value={metrics.today} tone="mint" />
         <Metric label="即将到期" value={metrics.expiring} tone="amber" />
@@ -451,6 +475,12 @@ function BookingDrawer({
     setForm({ ...form, ends_at: toLocalInput(addHours(new Date(form.starts_at), hours).toISOString()) });
   }
 
+  function setLocalPart(field: 'starts_at' | 'ends_at', part: 'date' | 'time', value: string) {
+    const current = form[field] || toLocalInput(new Date().toISOString());
+    const next = part === 'date' ? `${value}T${timePart(current)}` : `${datePart(current)}T${value}`;
+    setForm({ ...form, [field]: next });
+  }
+
   async function save(event: React.FormEvent) {
     event.preventDefault();
     setConflict('');
@@ -501,11 +531,17 @@ function BookingDrawer({
         <Field label="联系方式" value={form.renter_contact} onChange={(renter_contact) => setForm({ ...form, renter_contact })} />
         <label>
           <span>开始时间</span>
-          <input type="datetime-local" value={form.starts_at} onChange={(event) => setForm({ ...form, starts_at: event.target.value })} />
+          <div className="time-pair">
+            <input type="date" value={datePart(form.starts_at)} onChange={(event) => setLocalPart('starts_at', 'date', event.target.value)} />
+            <TimeSelect value={timePart(form.starts_at)} onChange={(value) => setLocalPart('starts_at', 'time', value)} />
+          </div>
         </label>
         <label>
           <span>结束时间</span>
-          <input type="datetime-local" value={form.ends_at} onChange={(event) => setForm({ ...form, ends_at: event.target.value })} />
+          <div className="time-pair">
+            <input type="date" value={datePart(form.ends_at)} onChange={(event) => setLocalPart('ends_at', 'date', event.target.value)} />
+            <TimeSelect value={timePart(form.ends_at)} onChange={(value) => setLocalPart('ends_at', 'time', value)} />
+          </div>
         </label>
         <div className="duration-grid">
           {[1, 3, 6, 9, 12, 24].map((hour) => <button type="button" key={hour} onClick={() => setDuration(hour)}>{hour}h</button>)}
@@ -1079,7 +1115,7 @@ function DeleteButton({ url, refresh }: { url: string; refresh: () => void }) {
 }
 
 function MobileTabs({ active, setActive, isAdmin }: { active: string; setActive: (id: string) => void; isAdmin: boolean }) {
-  const items = navItems.filter((item) => ['timeline', 'accounts', 'records', 'settings'].includes(item.id) || (isAdmin && item.id === 'backup'));
+  const items = navItems.filter((item) => ['timeline', 'accounts', 'records'].includes(item.id) || (isAdmin && ['backup', 'settings'].includes(item.id)));
   return (
     <nav className="mobile-tabs">
       {items.slice(0, 5).map((item) => {
@@ -1104,10 +1140,32 @@ function Field({ label, value, onChange, type = 'text' }: { label: string; value
   );
 }
 
+function TimeSelect({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const options = Array.from({ length: 24 * 2 }, (_, index) => {
+    const hour = Math.floor(index / 2);
+    const minute = index % 2 === 0 ? '00' : '30';
+    return `${String(hour).padStart(2, '0')}:${minute}`;
+  });
+  return (
+    <select className="time-select" value={value} onChange={(event) => onChange(event.target.value)}>
+      {options.map((option) => <option key={option} value={option}>{option}</option>)}
+    </select>
+  );
+}
+
 function toLocalInput(value: string) {
   const date = new Date(value);
   date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
   return date.toISOString().slice(0, 16);
+}
+
+function datePart(value: string) {
+  return (value || toLocalInput(new Date().toISOString())).slice(0, 10);
+}
+
+function timePart(value: string) {
+  const time = (value || toLocalInput(new Date().toISOString())).slice(11, 16);
+  return /^\d{2}:\d{2}$/.test(time) ? time : '00:00';
 }
 
 function addHours(date: Date, hours: number) {
