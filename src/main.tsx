@@ -278,12 +278,6 @@ function Dashboard({
             <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索账号、租客、手机号" />
           </div>
           <input className="date-input" type="date" defaultValue={new Date().toISOString().slice(0, 10)} />
-          {user.role === 'admin' && (
-            <button className="soft-btn" onClick={() => window.location.assign('/api/admin/export')}>
-              <Download size={16} />
-              导出
-            </button>
-          )}
           <button className="primary" onClick={() => { setEditing(null); setDrawerOpen(true); }}>
             <Plus size={16} />
             新建出租
@@ -589,7 +583,7 @@ function AccountsPanel({ user, accounts, refresh }: { user: User; accounts: Acco
         ))}
         {accounts.length === 0 && <div className="empty-table">还没有账号，点击右上角“添加账号”开始。</div>}
       </div>
-      {modal && <AccountModal account={modal === 'new' ? null : modal} onClose={() => setModal(null)} onSaved={() => { setModal(null); refresh(); }} />}
+      {modal && <AccountModal account={modal === 'new' ? null : modal} onClose={() => setModal(null)} onSaved={async () => { await refresh(); setModal(null); }} />}
     </Panel>
   );
   const [form, setForm] = useState({ name: '', login: '', password: '', remark: '' });
@@ -684,7 +678,7 @@ function UsersPanel({ users, refresh }: { users: User[]; refresh: () => void }) 
         ))}
         {users.length === 0 && <div className="empty-table">还没有用户。</div>}
       </div>
-      {modal && <UserModal user={modal === 'new' ? null : modal} onClose={() => setModal(null)} onSaved={() => { setModal(null); refresh(); }} />}
+      {modal && <UserModal user={modal === 'new' ? null : modal} onClose={() => setModal(null)} onSaved={async () => { await refresh(); setModal(null); }} />}
     </Panel>
   );
   const [form, setForm] = useState({ username: '', password: '', role: 'user' });
@@ -732,7 +726,7 @@ function UsersPanel({ users, refresh }: { users: User[]; refresh: () => void }) 
   );
 }
 
-function AccountModal({ account, onClose, onSaved }: { account: Account | null; onClose: () => void; onSaved: () => void }) {
+function AccountModal({ account, onClose, onSaved }: { account: Account | null; onClose: () => void; onSaved: () => void | Promise<void> }) {
   const [form, setForm] = useState({
     name: account?.name || '',
     login: account?.login || '',
@@ -750,7 +744,7 @@ function AccountModal({ account, onClose, onSaved }: { account: Account | null; 
         method: account ? 'PUT' : 'POST',
         body: JSON.stringify(form)
       });
-      onSaved();
+      await onSaved();
     } catch (err) {
       setError((err as Error).message);
     }
@@ -791,7 +785,7 @@ function AccountModal({ account, onClose, onSaved }: { account: Account | null; 
   );
 }
 
-function UserModal({ user, onClose, onSaved }: { user: User | null; onClose: () => void; onSaved: () => void }) {
+function UserModal({ user, onClose, onSaved }: { user: User | null; onClose: () => void; onSaved: () => void | Promise<void> }) {
   const [form, setForm] = useState({
     username: user?.username || '',
     password: '',
@@ -808,7 +802,7 @@ function UserModal({ user, onClose, onSaved }: { user: User | null; onClose: () 
         method: user ? 'PUT' : 'POST',
         body: JSON.stringify(form)
       });
-      onSaved();
+      await onSaved();
     } catch (err) {
       setError((err as Error).message);
     }
