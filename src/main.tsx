@@ -281,29 +281,15 @@ function Dashboard({
         <section className="content">
           {error && <div className="toast">{error}<button onClick={() => setError('')}><X size={14} /></button></div>}
           {active === 'timeline' && (
-            <div className="timeline-shell">
-              <Timeline
-                user={user}
-                accounts={overview.accounts}
-                bookings={filteredBookings}
-                query={query}
-                onQuery={setQuery}
-                onNew={() => { setEditing(null); setDrawerOpen(true); }}
-                onEdit={(booking) => { setEditing(booking); setDrawerOpen(true); }}
-              />
-              <BookingDrawer
-                user={user}
-                accounts={overview.accounts}
-                booking={editing}
-                embedded
-                onClose={() => { setEditing(null); }}
-                onSaved={async () => {
-                  setEditing(null);
-                  await refresh();
-                }}
-                onError={setError}
-              />
-            </div>
+            <Timeline
+              user={user}
+              accounts={overview.accounts}
+              bookings={filteredBookings}
+              query={query}
+              onQuery={setQuery}
+              onNew={() => { setEditing(null); setDrawerOpen(true); }}
+              onEdit={(booking) => { setEditing(booking); setDrawerOpen(true); }}
+            />
           )}
           {active === 'accounts' && <AccountsPanel user={user} accounts={overview.accounts} refresh={refresh} />}
           {active === 'users' && user.role === 'admin' && <UsersPanel users={overview.users} refresh={refresh} />}
@@ -315,7 +301,7 @@ function Dashboard({
       </main>
 
       <MobileTabs active={active} setActive={setActive} isAdmin={user.role === 'admin'} />
-      {drawerOpen && active !== 'timeline' && (
+      {drawerOpen && (
         <BookingDrawer
           user={user}
           accounts={overview.accounts}
@@ -327,21 +313,6 @@ function Dashboard({
           }}
           onError={setError}
         />
-      )}
-      {drawerOpen && active === 'timeline' && (
-        <div className="timeline-mobile-drawer">
-          <BookingDrawer
-            user={user}
-            accounts={overview.accounts}
-            booking={editing}
-            onClose={() => setDrawerOpen(false)}
-            onSaved={async () => {
-              setDrawerOpen(false);
-              await refresh();
-            }}
-            onError={setError}
-          />
-        </div>
       )}
     </div>
   );
@@ -476,7 +447,6 @@ function BookingDrawer({
   user,
   accounts,
   booking,
-  embedded = false,
   onClose,
   onSaved,
   onError
@@ -484,7 +454,6 @@ function BookingDrawer({
   user: User;
   accounts: Account[];
   booking: Booking | null;
-  embedded?: boolean;
   onClose: () => void;
   onSaved: () => void;
   onError: (msg: string) => void;
@@ -545,7 +514,7 @@ function BookingDrawer({
   }
 
   return (
-    <aside className={embedded ? 'drawer embedded-drawer' : 'drawer'}>
+    <aside className="drawer">
       <div className="drawer-head">
         <div>
           <span>出租小表单</span>
