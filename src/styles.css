@@ -131,7 +131,14 @@ input:focus, select:focus, textarea:focus { border-color: var(--mint); box-shado
 .date-input { max-width: 160px; }
 .user-pill { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; color: var(--muted); font-size: 13px; }
 .mobile-menu { display: none; }
-.content { padding: 22px; }
+.content { padding: 18px; }
+
+.timeline-shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 14px;
+  align-items: start;
+}
 
 .timeline-command {
   display: grid;
@@ -142,12 +149,12 @@ input:focus, select:focus, textarea:focus { border-color: var(--mint); box-shado
 }
 .timeline-search { max-width: 520px; justify-self: end; width: 100%; }
 
-.metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-bottom: 16px; }
+.metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-bottom: 14px; }
 .metric {
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 14px;
+  padding: 18px;
   box-shadow: 0 10px 30px rgba(69, 130, 130, 0.08);
   display: grid;
   gap: 5px;
@@ -166,7 +173,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--mint); box-shado
   background: #fff;
   border: 1px solid var(--line);
   border-radius: 8px;
-  box-shadow: var(--shadow);
+  box-shadow: 0 18px 50px rgba(50, 112, 120, 0.08);
 }
 .time-head {
   position: sticky;
@@ -260,6 +267,12 @@ input:focus, select:focus, textarea:focus { border-color: var(--mint); box-shado
 .drawer-head h2 { margin: 4px 0 0; }
 .duration-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; }
 .duration-grid button { min-height: 36px; border: 1px solid var(--line); background: #fff; border-radius: 8px; color: var(--muted); }
+.duration-grid button.active {
+  background: linear-gradient(135deg, var(--mint), #26c7bd);
+  color: #fff;
+  border-color: transparent;
+  box-shadow: 0 8px 18px rgba(34, 185, 157, 0.2);
+}
 .time-pair {
   display: grid;
   grid-template-columns: 1fr 108px;
@@ -276,6 +289,16 @@ input:focus, select:focus, textarea:focus { border-color: var(--mint); box-shado
 .check-row { grid-template-columns: auto 1fr; align-items: center; }
 .check-row input { width: auto; min-height: auto; }
 .drawer-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.embedded-drawer {
+  position: sticky;
+  top: 92px;
+  right: auto;
+  bottom: auto;
+  width: 100%;
+  max-width: none;
+  max-height: calc(100vh - 110px);
+}
+.timeline-mobile-drawer { display: none; }
 
 .panel-page {
   background: #fff;
@@ -486,6 +509,8 @@ input:focus, select:focus, textarea:focus { border-color: var(--mint); box-shado
   .timeline-command { grid-template-columns: auto 1fr auto; }
   .timeline-search { grid-column: 1 / -1; max-width: none; justify-self: stretch; }
   .drawer { top: 84px; right: 12px; bottom: 12px; }
+  .timeline-shell { grid-template-columns: 1fr; }
+  .embedded-drawer { position: static; max-height: none; }
   .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
@@ -533,6 +558,8 @@ input:focus, select:focus, textarea:focus { border-color: var(--mint); box-shado
     max-width: none;
     border-radius: 0;
   }
+  .embedded-drawer { display: none; }
+  .timeline-mobile-drawer { display: block; }
   .duration-grid { grid-template-columns: repeat(3, 1fr); }
   .time-pair { grid-template-columns: 1fr; }
   .panel-title { display: grid; }

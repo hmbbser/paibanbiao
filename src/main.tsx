@@ -281,15 +281,29 @@ function Dashboard({
         <section className="content">
           {error && <div className="toast">{error}<button onClick={() => setError('')}><X size={14} /></button></div>}
           {active === 'timeline' && (
-            <Timeline
-              user={user}
-              accounts={overview.accounts}
-              bookings={filteredBookings}
-              query={query}
-              onQuery={setQuery}
-              onNew={() => { setEditing(null); setDrawerOpen(true); }}
-              onEdit={(booking) => { setEditing(booking); setDrawerOpen(true); }}
-            />
+            <div className="timeline-shell">
+              <Timeline
+                user={user}
+                accounts={overview.accounts}
+                bookings={filteredBookings}
+                query={query}
+                onQuery={setQuery}
+                onNew={() => { setEditing(null); setDrawerOpen(true); }}
+                onEdit={(booking) => { setEditing(booking); setDrawerOpen(true); }}
+              />
+              <BookingDrawer
+                user={user}
+                accounts={overview.accounts}
+                booking={editing}
+                embedded
+                onClose={() => { setEditing(null); }}
+                onSaved={async () => {
+                  setEditing(null);
+                  await refresh();
+                }}
+                onError={setError}
+              />
+            </div>
           )}
           {active === 'accounts' && <AccountsPanel user={user} accounts={overview.accounts} refresh={refresh} />}
           {active === 'users' && user.role === 'admin' && <UsersPanel users={overview.users} refresh={refresh} />}
@@ -301,7 +315,7 @@ function Dashboard({
       </main>
 
       <MobileTabs active={active} setActive={setActive} isAdmin={user.role === 'admin'} />
-      {drawerOpen && (
+      {drawerOpen && active !== 'timeline' && (
         <BookingDrawer
           user={user}
           accounts={overview.accounts}
@@ -313,6 +327,21 @@ function Dashboard({
           }}
           onError={setError}
         />
+      )}
+      {drawerOpen && active === 'timeline' && (
+        <div className="timeline-mobile-drawer">
+          <BookingDrawer
+            user={user}
+            accounts={overview.accounts}
+            booking={editing}
+            onClose={() => setDrawerOpen(false)}
+            onSaved={async () => {
+              setDrawerOpen(false);
+              await refresh();
+            }}
+            onError={setError}
+          />
+        </div>
       )}
     </div>
   );
@@ -447,6 +476,7 @@ function BookingDrawer({
   user,
   accounts,
   booking,
+  embedded = false,
   onClose,
   onSaved,
   onError
@@ -454,6 +484,7 @@ function BookingDrawer({
   user: User;
   accounts: Account[];
   booking: Booking | null;
+  embedded?: boolean;
   onClose: () => void;
   onSaved: () => void;
   onError: (msg: string) => void;
@@ -472,7 +503,9 @@ function BookingDrawer({
   const [conflict, setConflict] = useState('');
 
   function setDuration(hours: number) {
-    setForm({ ...form, ends_at: toLocalInput(addHours(new Date(form.starts_at), hours).toISOString()) });
+    const start = new Date(form.starts_at);
+    const nextEnd = toLocalInput(addHours(start, hours).toISOString());
+    setForm({ ...form, ends_at: nextEnd });
   }
 
   function setLocalPart(field: 'starts_at' | 'ends_at', part: 'date' | 'time', value: string) {
@@ -512,7 +545,7 @@ function BookingDrawer({
   }
 
   return (
-    <aside className="drawer">
+    <aside className={embedded ? 'drawer embedded-drawer' : 'drawer'}>
       <div className="drawer-head">
         <div>
           <span>出租小表单</span>
@@ -544,7 +577,9 @@ function BookingDrawer({
           </div>
         </label>
         <div className="duration-grid">
-          {[1, 3, 6, 9, 12, 24].map((hour) => <button type="button" key={hour} onClick={() => setDuration(hour)}>{hour}h</button>)}
+          {[1, 3, 6, 9, 12, 24].map((hour) => (
+            <button type="button" className={durationHours(form.starts_at, form.ends_at) === hour ? 'active' : ''} key={hour} onClick={() => setDuration(hour)}>{hour}h</button>
+          ))}
         </div>
         <label>
           <span>状态</span>
@@ -1170,6 +1205,11 @@ function timePart(value: string) {
 
 function addHours(date: Date, hours: number) {
   return new Date(date.getTime() + hours * 60 * 60 * 1000);
+}
+
+function durationHours(start: string, end: string) {
+  const diff = (new Date(end).getTime() - new Date(start).getTime()) / (60 * 60 * 1000);
+  return Number.isFinite(diff) ? Math.round(diff * 10) / 10 : 0;
 }
 
 function formatTime(value: string) {
