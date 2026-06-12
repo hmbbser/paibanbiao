@@ -50,9 +50,21 @@ function audit(actorId, action, entityType, entityId, summary) {
   ).run(nanoid(), actorId || null, action, entityType, entityId || null, summary, now());
 }
 
-function publicUser(user) {
+function auditRetentionDays() {
+  const settings = Object.fromEntries(allRows('settings').map((item) => [item.key, item.value]));
+  const raw = settings.auditRetentionDays === 'custom' ? settings.auditRetentionCustomDays : settings.auditRetentionDays;
+  const days = Number(raw || 7);
+  return Number.isFinite(days) && days > 0 ? days : 7;
+}
+
+function pruneAuditLogs() {
+  const cutoff = new Date(Date.now() - auditRetentionDays() * 24 * 60 * 60 * 1000).toISOString();
+  db.prepare('DELETE FROM audit_logs WHERE created_at < ?').run(cutoff);
+}
+
+function publicUser(user, canSwitch = false) {
   if (!user) return null;
-  return { id: user.id, username: user.username, role: user.role, enabled: Boolean(user.enabled), created_at: user.created_at };
+  return { id: user.id, username: user.username, role: user.role, enabled: Boolean(user.enabled), created_at: user.created_at, can_switch: canSwitch };
 }
 
 function requireAuth(req, res, next) {
@@ -83,7 +95,35 @@ function assertBookingInput(input) {
   return null;
 }
 
+function accountStatusError(accountId) {
+  const account = db.prepare('SELECT id, status FROM accounts WHERE id = ?').get(accountId);
+  if (!account) return '账号不存在';
+  if (account.status !== 'active') return '账号已停用，不能安排出租';
+  return null;
+}
+
+function autoStatusForBooking(booking, current = new Date()) {
+  if (booking.status === 'cancelled' || booking.status === 'ended_early') return booking.status;
+  const start = new Date(booking.starts_at);
+  const end = new Date(booking.ends_at);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return booking.status;
+  if (current >= end) return 'completed';
+  if (current >= start) return 'active';
+  return 'reserved';
+}
+
+function refreshBookingStatuses() {
+  const bookings = db.prepare("SELECT id, starts_at, ends_at, status FROM bookings WHERE status NOT IN ('cancelled', 'ended_early')").all();
+  const update = db.prepare('UPDATE bookings SET status = ?, updated_at = ? WHERE id = ? AND status != ?');
+  const timestamp = now();
+  for (const booking of bookings) {
+    const nextStatus = autoStatusForBooking(booking);
+    if (nextStatus !== booking.status) update.run(nextStatus, timestamp, booking.id, nextStatus);
+  }
+}
+
 function findConflicts({ account_id, starts_at, ends_at, excludeId }) {
+  refreshBookingStatuses();
   return db
     .prepare(
       `SELECT b.*, a.name as account_name, u.username as operator_name
@@ -91,7 +131,7 @@ function findConflicts({ account_id, starts_at, ends_at, excludeId }) {
        JOIN accounts a ON a.id = b.account_id
        LEFT JOIN users u ON u.id = b.operator_id
        WHERE b.account_id = ?
-         AND b.status IN ('reserved', 'active')
+         AND b.status != 'cancelled'
          AND b.starts_at < ?
          AND b.ends_at > ?
          AND (? IS NULL OR b.id != ?)
@@ -101,6 +141,7 @@ function findConflicts({ account_id, starts_at, ends_at, excludeId }) {
 }
 
 function bookingList() {
+  refreshBookingStatuses();
   return db
     .prepare(
       `SELECT b.*, a.name as account_name, a.login as account_login, u.username as operator_name
@@ -136,7 +177,8 @@ app.post('/api/setup', async (req, res) => {
   }
   audit(id, 'setup', 'system', 'setup', '创建首次管理员并完成安装向导');
   req.session.userId = id;
-  res.json({ user: publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(id)) });
+  req.session.adminUserId = id;
+  res.json({ user: publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(id), true) });
 });
 
 app.post('/api/auth/login', async (req, res) => {
@@ -146,8 +188,9 @@ app.post('/api/auth/login', async (req, res) => {
     return res.status(401).json({ error: '用户名或密码错误' });
   }
   req.session.userId = user.id;
+  req.session.adminUserId = user.role === 'admin' ? user.id : null;
   audit(user.id, 'login', 'user', user.id, '用户登录');
-  res.json({ user: publicUser(user) });
+  res.json({ user: publicUser(user, user.role === 'admin') });
 });
 
 app.post('/api/auth/logout', requireAuth, (req, res) => {
@@ -158,9 +201,23 @@ app.post('/api/auth/logout', requireAuth, (req, res) => {
   });
 });
 
+app.post('/api/auth/switch-user', requireAuth, (req, res) => {
+  const rootAdminId = req.session.adminUserId || (req.user.role === 'admin' ? req.user.id : null);
+  if (!rootAdminId) return res.status(403).json({ error: '只有管理员可以快捷切换用户' });
+  const rootAdmin = db.prepare("SELECT * FROM users WHERE id = ? AND role = 'admin' AND enabled = 1").get(rootAdminId);
+  if (!rootAdmin) return res.status(403).json({ error: '管理员切换权限已失效' });
+  const nextUser = db.prepare('SELECT * FROM users WHERE id = ? AND enabled = 1').get(req.body.userId);
+  if (!nextUser) return res.status(404).json({ error: '用户不存在或已停用' });
+  audit(req.user.id, 'switch_user', 'user', nextUser.id, `管理员快捷切换到 ${nextUser.username}`);
+  req.session.adminUserId = rootAdmin.id;
+  req.session.userId = nextUser.id;
+  res.json({ user: publicUser(nextUser, true) });
+});
+
 app.get('/api/auth/me', requireAuth, (req, res) => {
   const settings = Object.fromEntries(allRows('settings').map((item) => [item.key, item.value]));
-  res.json({ user: publicUser(req.user), settings, version: appVersion });
+  const canSwitch = req.user.role === 'admin' || Boolean(req.session.adminUserId);
+  res.json({ user: publicUser(req.user, canSwitch), settings, version: appVersion });
 });
 
 app.get('/api/settings', requireAuth, (_req, res) => {
@@ -169,7 +226,7 @@ app.get('/api/settings', requireAuth, (_req, res) => {
 });
 
 app.put('/api/settings', requireAuth, requireAdmin, (req, res) => {
-  const allowed = ['siteName', 'timezone', 'defaultView'];
+  const allowed = ['siteName', 'timezone', 'defaultView', 'auditRetentionDays', 'auditRetentionCustomDays'];
   const update = db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)');
   for (const key of allowed) {
     if (typeof req.body[key] === 'string') update.run(key, req.body[key].trim());
@@ -278,8 +335,10 @@ app.get('/api/bookings', requireAuth, (_req, res) => {
 app.post('/api/bookings', requireAuth, (req, res) => {
   const err = assertBookingInput(req.body);
   if (err) return res.status(400).json({ error: err });
+  const accountErr = accountStatusError(req.body.account_id);
+  if (accountErr) return res.status(400).json({ error: accountErr });
   const conflicts = findConflicts(req.body);
-  if (conflicts.length && !(req.user.role === 'admin' && req.body.override)) {
+  if (conflicts.length) {
     return res.status(409).json({ error: '这个时间被预约啦', conflicts });
   }
   const id = nanoid();
@@ -301,7 +360,7 @@ app.post('/api/bookings', requireAuth, (req, res) => {
     createdAt,
     createdAt
   );
-  audit(req.user.id, conflicts.length ? 'override_create' : 'create', 'booking', id, `新增出租记录 ${req.body.renter_name}`);
+  audit(req.user.id, 'create', 'booking', id, `新增出租记录 ${req.body.renter_name}`);
   res.json(db.prepare('SELECT * FROM bookings WHERE id = ?').get(id));
 });
 
@@ -311,8 +370,14 @@ app.put('/api/bookings/:id', requireAuth, (req, res) => {
   if (req.user.role !== 'admin' && booking.operator_id !== req.user.id) return res.status(403).json({ error: '只能修改自己创建的记录' });
   const err = assertBookingInput(req.body);
   if (err) return res.status(400).json({ error: err });
+  const targetAccount = db.prepare('SELECT id, status FROM accounts WHERE id = ?').get(req.body.account_id);
+  if (!targetAccount) return res.status(400).json({ error: '账号不存在' });
+  const targetAccountDisabled = targetAccount.status !== 'active';
+  const accountChanged = req.body.account_id !== booking.account_id;
+  const timeChanged = req.body.starts_at !== booking.starts_at || req.body.ends_at !== booking.ends_at;
+  if (targetAccountDisabled && (accountChanged || timeChanged)) return res.status(400).json({ error: '账号已停用，不能安排出租' });
   const conflicts = findConflicts({ ...req.body, excludeId: req.params.id });
-  if (conflicts.length && !(req.user.role === 'admin' && req.body.override)) {
+  if (conflicts.length) {
     return res.status(409).json({ error: '这个时间被预约啦', conflicts });
   }
   db.prepare(
@@ -330,7 +395,7 @@ app.put('/api/bookings/:id', requireAuth, (req, res) => {
     now(),
     req.params.id
   );
-  audit(req.user.id, conflicts.length ? 'override_update' : 'update', 'booking', req.params.id, `修改出租记录 ${req.body.renter_name}`);
+  audit(req.user.id, 'update', 'booking', req.params.id, `修改出租记录 ${req.body.renter_name}`);
   res.json(db.prepare('SELECT * FROM bookings WHERE id = ?').get(req.params.id));
 });
 
@@ -340,16 +405,27 @@ app.patch('/api/bookings/:id/action', requireAuth, (req, res) => {
   if (req.user.role !== 'admin' && booking.operator_id !== req.user.id) return res.status(403).json({ error: '只能操作自己创建的记录' });
   const { action, ends_at } = req.body;
   if (action === 'endEarly') {
-    db.prepare("UPDATE bookings SET status = 'ended_early', ends_at = ?, updated_at = ? WHERE id = ?").run(ends_at || now(), now(), req.params.id);
+    const timestamp = now();
+    db.prepare("UPDATE bookings SET status = 'ended_early', ends_at = ?, updated_at = ? WHERE id = ?").run(timestamp, timestamp, req.params.id);
   } else if (action === 'renew') {
+    const accountErr = accountStatusError(booking.account_id);
+    if (accountErr) return res.status(400).json({ error: '账号已停用，不能续租' });
     const newEnd = ends_at;
+    if (!newEnd) return res.status(400).json({ error: '请选择新的结束时间后再续租' });
+    const oldEndTime = new Date(booking.ends_at).getTime();
+    const newEndTime = new Date(newEnd).getTime();
+    if (Number.isNaN(newEndTime)) return res.status(400).json({ error: '请选择有效的续租时间' });
+    if (newEndTime === oldEndTime) return res.status(400).json({ error: '请先选择新的结束时间后再续租' });
+    if (newEndTime <= oldEndTime) return res.status(400).json({ error: '续租时间必须晚于当前结束时间' });
     const conflicts = findConflicts({ account_id: booking.account_id, starts_at: booking.starts_at, ends_at: newEnd, excludeId: booking.id });
-    if (conflicts.length && !(req.user.role === 'admin' && req.body.override)) {
+    if (conflicts.length) {
       return res.status(409).json({ error: '续租时间已被预约啦', conflicts });
     }
     db.prepare('UPDATE bookings SET ends_at = ?, updated_at = ? WHERE id = ?').run(newEnd, now(), req.params.id);
   } else if (action === 'cancel') {
-    db.prepare("UPDATE bookings SET status = 'cancelled', updated_at = ? WHERE id = ?").run(now(), req.params.id);
+    db.prepare('DELETE FROM bookings WHERE id = ?').run(req.params.id);
+    audit(req.user.id, 'delete', 'booking', req.params.id, '删除出租记录');
+    return res.json({ ok: true });
   } else {
     return res.status(400).json({ error: '未知操作' });
   }
@@ -367,6 +443,7 @@ app.delete('/api/bookings/:id', requireAuth, (req, res) => {
 });
 
 app.get('/api/audit-logs', requireAuth, requireAdmin, (_req, res) => {
+  pruneAuditLogs();
   res.json(
     db
       .prepare(
@@ -378,6 +455,11 @@ app.get('/api/audit-logs', requireAuth, requireAdmin, (_req, res) => {
       )
       .all()
   );
+});
+
+app.delete('/api/audit-logs', requireAuth, requireAdmin, (req, res) => {
+  db.prepare('DELETE FROM audit_logs').run();
+  res.json({ ok: true });
 });
 
 app.get('/api/admin/export', requireAuth, requireAdmin, (req, res) => {
