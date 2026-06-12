@@ -25,6 +25,10 @@ const githubRepo = process.env.GITHUB_REPO || 'hmbbser/paibanbiao';
 const githubBranch = process.env.GITHUB_BRANCH || 'main';
 const appDir = process.env.APP_DIR || '/opt/cute-schedule';
 
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
 migrate();
 
 app.use(cors({ origin: true, credentials: true }));
@@ -537,11 +541,33 @@ app.post('/api/admin/update', requireAuth, requireAdmin, async (req, res) => {
     if (status.stdout.trim() && !req.body.force) {
       return res.status(409).json({ error: '服务器项目目录有未提交改动，请确认后勾选强制更新', dirty: status.stdout });
     }
-    const command = [
-      `git fetch origin ${githubBranch}`,
-      `git reset --hard origin/${githubBranch}`,
-      '(docker compose up -d --build || docker-compose up -d --build)'
-    ].join(' && ');
+    const quotedAppDir = shellQuote(appDir);
+    const quotedBranch = shellQuote(githubBranch);
+    const composeCommand = '(docker compose up -d --build --force-recreate --remove-orphans || docker-compose up -d --build --force-recreate --remove-orphans)';
+    const command = `
+      set -eu
+      APP_DIR=${quotedAppDir}
+      BRANCH=${quotedBranch}
+      cd "$APP_DIR"
+      git fetch origin "$BRANCH"
+      git reset --hard "origin/$BRANCH"
+      if command -v docker >/dev/null 2>&1 && [ -S /var/run/docker.sock ]; then
+        SELF_ID="$(cat /etc/hostname 2>/dev/null || true)"
+        SELF_IMAGE="$(docker inspect -f '{{.Config.Image}}' "$SELF_ID" 2>/dev/null || true)"
+        if [ -n "$SELF_IMAGE" ]; then
+          docker rm -f cute-schedule-updater >/dev/null 2>&1 || true
+          docker run -d --name cute-schedule-updater \\
+            -v /var/run/docker.sock:/var/run/docker.sock \\
+            -v "$APP_DIR":"$APP_DIR" \\
+            -w "$APP_DIR" \\
+            -e APP_DIR="$APP_DIR" \\
+            -e GITHUB_BRANCH="$BRANCH" \\
+            "$SELF_IMAGE" sh -lc 'set -eu; cd "$APP_DIR"; git config --global --add safe.directory "$APP_DIR" || true; git fetch origin "$GITHUB_BRANCH"; git reset --hard "origin/$GITHUB_BRANCH"; ${composeCommand}'
+          exit 0
+        fi
+      fi
+      ${composeCommand}
+    `;
     audit(req.user.id, 'update_start', 'system', 'version', '开始从 GitHub 拉取更新并重启服务');
     res.json({ ok: true, message: '已开始更新，服务会自动重建并重启，请稍后刷新页面。' });
     exec(command, { cwd: appDir, timeout: 1000 * 60 * 20 }, (error, stdout, stderr) => {

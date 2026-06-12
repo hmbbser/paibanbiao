@@ -142,7 +142,7 @@ function createMockState(): MockState {
     { id: 'a-4', name: 'D账号', login: 'D456789', password: 'dD456789', remark: '测试账号', status: 'active', created_at: mockNow(-30) }
   ];
   return {
-    settings: { ...defaultSettings, siteName: '账号出租管理系统', exportVersion: '0.2.2', auditRetentionDays: '7' },
+    settings: { ...defaultSettings, siteName: '账号出租管理系统', exportVersion: '0.2.3', auditRetentionDays: '7' },
     users: [admin, staff],
     accounts,
     bookings: [
@@ -339,7 +339,7 @@ async function mockApi<T>(url: string, options: RequestInit = {}): Promise<T> {
     saveMockState(state);
     return ok({ settings: state.settings });
   }
-  if (url === '/api/admin/version') return ok({ current: '0.2.2-local', latest: '0.2.2-local', hasUpdate: false, repo: 'hmbbser/paibanbiao', branch: 'main' });
+  if (url === '/api/admin/version') return ok({ current: '0.2.3-local', latest: '0.2.3-local', hasUpdate: false, repo: 'hmbbser/paibanbiao', branch: 'main' });
   if (url === '/api/admin/update' && method === 'POST') return ok({ message: '本地 UI 模式不执行真实更新' });
   if (url === '/api/admin/import' && method === 'POST') {
     if (options.body instanceof FormData) {
