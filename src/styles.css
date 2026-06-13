@@ -207,6 +207,20 @@ input:focus, select:focus, textarea:focus { border-color: var(--mint); box-shado
   z-index: 2;
 }
 .account-head { left: 0; z-index: 3; }
+.account-rail-head {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  box-shadow: none;
+  cursor: default;
+  text-align: left;
+  font-weight: 900;
+}
+.account-rail-head:hover,
+.account-rail-head:active {
+  transform: none;
+}
 .account-cell {
   position: sticky;
   left: 0;
@@ -264,6 +278,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--mint); box-shado
   font-size: 13px;
 }
 .mobile-schedule { display: none; }
+.account-rail-toggle { display: none; }
 
 .drawer {
   position: fixed;
@@ -2852,6 +2867,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--mint); box-shado
     min-height: 86px;
     padding: 10px 8px;
     align-content: center;
+    overflow: hidden;
   }
   .account-cell small { display: none; }
   .account-line {
@@ -3565,6 +3581,81 @@ input:focus, select:focus, textarea:focus { border-color: var(--mint); box-shado
     color: #0c9d91;
     font-weight: 900;
     background: linear-gradient(180deg, #e9fbf7, #ffffff);
+  }
+}
+
+@media (max-width: 640px) and (pointer: coarse) {
+  .timeline-view {
+    --timeline-gap: 10px;
+  }
+  .account-rail-toggle {
+    min-height: 34px;
+    width: 100%;
+    margin: 0 0 8px;
+    border: 1px solid #cfeee8;
+    border-radius: 999px;
+    background: linear-gradient(180deg, #ffffff, #f2fffb);
+    color: #0c7f75;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    font-size: 12px;
+    font-weight: 900;
+    box-shadow: 0 10px 22px rgba(61, 99, 120, 0.08);
+  }
+  .scheduler.account-rail-collapsed {
+    grid-template-columns: 30px repeat(24, var(--hour-width));
+  }
+  .account-rail-head {
+    cursor: pointer;
+    justify-content: center;
+    gap: 4px;
+    border-right: 1px solid #cfeee8;
+    box-shadow: 8px 0 18px rgba(61, 99, 120, 0.08);
+  }
+  .account-rail-open .account-rail-head svg {
+    transform: rotate(180deg);
+  }
+  .account-rail-collapsed .account-rail-head {
+    writing-mode: vertical-rl;
+    text-orientation: mixed;
+    padding: 8px 0;
+  }
+  .account-rail-collapsed .account-rail-head svg {
+    transform: rotate(90deg);
+  }
+  .account-rail-open .account-cell {
+    box-shadow: 8px 0 18px rgba(61, 99, 120, 0.08);
+  }
+  .account-rail-collapsed .account-cell {
+    padding: 0;
+    place-items: center;
+    align-content: stretch;
+    background: linear-gradient(180deg, #effbf8, #ffffff);
+  }
+  .account-rail-collapsed .account-cell > * {
+    display: none;
+  }
+  .account-rail-collapsed .account-cell::before {
+    content: "";
+    width: 6px;
+    height: 34px;
+    border-radius: 999px;
+    background: linear-gradient(180deg, #18c7b7, #75c9f5);
+    box-shadow: 0 0 0 5px rgba(20, 184, 166, 0.12);
+  }
+  .account-rail-collapsed .account-cell::after {
+    content: "账号";
+    writing-mode: vertical-rl;
+    margin-top: 8px;
+    color: #0c7f75;
+    font-size: 10px;
+    font-weight: 900;
+  }
+  .account-rail-open .booking-bar {
+    margin-left: var(--timeline-gap);
+    max-width: calc(100% - var(--timeline-gap) - 4px);
   }
 }
 

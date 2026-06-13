@@ -1003,6 +1003,8 @@ function Timeline({
   const [selectedDate, setSelectedDate] = useState(() => getLocalDateValue(new Date()));
   const [recordMode, setRecordMode] = useState<'today' | 'recent'>('today');
   const [nameFilter, setNameFilter] = useState<string[]>([]);
+  const [accountRailOpen, setAccountRailOpen] = useState(true);
+  const [accountRailEnabled, setAccountRailEnabled] = useState(false);
   const schedulerRef = useRef<HTMLDivElement>(null);
   const schedulerDrag = useRef({
     active: false,
@@ -1053,6 +1055,18 @@ function Timeline({
     active: activeBookings.filter((booking) => booking.status === 'active').length,
     reserved: activeBookings.filter((booking) => booking.status === 'reserved').length
   };
+  const accountRailActive = accountRailEnabled && !accountRailOpen;
+
+  useEffect(() => {
+    const media = window.matchMedia('(max-width: 640px) and (pointer: coarse)');
+    const update = () => {
+      setAccountRailEnabled(media.matches);
+      if (!media.matches) setAccountRailOpen(true);
+    };
+    update();
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, []);
 
   function ownerClass(booking: Booking) {
     return booking.operator_id === user.id ? 'is-mine' : 'is-others';
@@ -1148,8 +1162,20 @@ function Timeline({
         <button type="button" className={statusFilter === 'conflict' ? 'active' : ''} onClick={() => setStatusFilter('conflict')}><span className="dot cancelled" />冲突</button>
       </div>
 
+      {accountRailEnabled && (
+        <button
+          type="button"
+          className={`account-rail-toggle ${accountRailOpen ? 'open' : ''}`}
+          onClick={() => setAccountRailOpen((value) => !value)}
+          aria-pressed={accountRailOpen}
+        >
+          <KeyRound size={14} />
+          <span>{accountRailOpen ? '收起账号小窝' : '展开账号小窝'}</span>
+        </button>
+      )}
+
       <div
-        className="scheduler"
+        className={`scheduler ${accountRailEnabled ? (accountRailOpen ? 'account-rail-open' : 'account-rail-collapsed') : ''}`}
         ref={schedulerRef}
         onPointerDown={startSchedulerDrag}
         onPointerMove={moveSchedulerDrag}
@@ -1157,7 +1183,17 @@ function Timeline({
         onPointerCancel={endSchedulerDrag}
         onClickCapture={suppressDraggedClick}
       >
-        <div className="time-head account-head">账号小窝</div>
+        <button
+          type="button"
+          className="time-head account-head account-rail-head"
+          onClick={() => {
+            if (accountRailEnabled) setAccountRailOpen((value) => !value);
+          }}
+          aria-label={accountRailOpen ? '收起账号小窝' : '展开账号小窝'}
+        >
+          <span>账号小窝</span>
+          {accountRailEnabled && <ChevronRight size={13} />}
+        </button>
         {Array.from({ length: 24 }, (_, index) => (
           <div className="time-head" key={index}>
             <strong>{String(index).padStart(2, '0')}:00</strong>
@@ -1177,9 +1213,12 @@ function Timeline({
                 style={{ minHeight: rowHeight }}
                 role="button"
                 tabIndex={0}
-                onClick={() => onViewAccount(account)}
+                onClick={() => accountRailActive ? setAccountRailOpen(true) : onViewAccount(account)}
                 onKeyDown={(event) => {
-                  if (event.key === 'Enter' || event.key === ' ') onViewAccount(account);
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    if (accountRailActive) setAccountRailOpen(true);
+                    else onViewAccount(account);
+                  }
                 }}
               >
                 <div className="account-line">
