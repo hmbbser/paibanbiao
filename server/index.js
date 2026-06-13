@@ -29,6 +29,30 @@ function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
 }
 
+function shortCommit(hash) {
+  return hash ? String(hash).trim().slice(0, 7) : '';
+}
+
+async function currentGitCommit() {
+  try {
+    const { stdout } = await execAsync('git rev-parse HEAD', { cwd: appDir, timeout: 30_000 });
+    return stdout.trim();
+  } catch {
+    return '';
+  }
+}
+
+async function remoteGitCommit() {
+  try {
+    const remote = `https://github.com/${githubRepo}.git`;
+    const ref = `refs/heads/${githubBranch}`;
+    const { stdout } = await execAsync(`git ls-remote ${shellQuote(remote)} ${shellQuote(ref)}`, { timeout: 45_000 });
+    return stdout.trim().split(/\s+/)[0] || '';
+  } catch {
+    return '';
+  }
+}
+
 migrate();
 
 app.use(cors({ origin: true, credentials: true }));
@@ -562,14 +586,26 @@ app.post('/api/admin/import', requireAuth, requireAdmin, upload.single('file'), 
 app.get('/api/admin/version', requireAuth, requireAdmin, async (_req, res) => {
   try {
     const url = `https://raw.githubusercontent.com/${githubRepo}/${githubBranch}/package.json`;
-    const response = await fetch(url, { cache: 'no-store' });
+    const [response, localCommit, remoteCommit] = await Promise.all([
+      fetch(url, { cache: 'no-store' }),
+      currentGitCommit(),
+      remoteGitCommit()
+    ]);
     if (!response.ok) throw new Error(`GitHub 返回 ${response.status}`);
     const remotePackage = await response.json();
-    const latest = remotePackage.version || '0.0.0';
+    const latestVersion = remotePackage.version || '0.0.0';
+    const versionChanged = compareVersion(latestVersion, appVersion) > 0;
+    const commitChanged = Boolean(localCommit && remoteCommit && localCommit !== remoteCommit);
+    const localShort = shortCommit(localCommit);
+    const remoteShort = shortCommit(remoteCommit);
     res.json({
-      current: appVersion,
-      latest,
-      hasUpdate: compareVersion(latest, appVersion) > 0,
+      current: localShort ? `${appVersion} (${localShort})` : appVersion,
+      latest: remoteShort ? `${latestVersion} (${remoteShort})` : latestVersion,
+      currentVersion: appVersion,
+      latestVersion,
+      currentCommit: localCommit,
+      latestCommit: remoteCommit,
+      hasUpdate: versionChanged || commitChanged,
       repo: githubRepo,
       branch: githubBranch
     });
