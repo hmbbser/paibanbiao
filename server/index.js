@@ -230,7 +230,7 @@ app.get('/api/settings', requireAuth, (_req, res) => {
 });
 
 app.put('/api/settings', requireAuth, requireAdmin, (req, res) => {
-  const allowed = ['siteName', 'timezone', 'defaultView', 'auditRetentionDays', 'auditRetentionCustomDays'];
+  const allowed = ['siteName', 'timezone', 'defaultView', 'auditRetentionDays', 'auditRetentionCustomDays', 'accountCopyFields', 'nameScrollSeconds', 'toastDurationSeconds'];
   const update = db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)');
   for (const key of allowed) {
     if (typeof req.body[key] === 'string') update.run(key, req.body[key].trim());
@@ -241,13 +241,47 @@ app.put('/api/settings', requireAuth, requireAdmin, (req, res) => {
 });
 
 app.get('/api/overview', requireAuth, (_req, res) => {
-  const accounts = db.prepare('SELECT * FROM accounts ORDER BY created_at DESC').all();
+  const accounts = db.prepare('SELECT * FROM accounts ORDER BY created_at ASC').all();
   const users = db.prepare('SELECT id, username, role, enabled, created_at FROM users ORDER BY created_at DESC').all();
   res.json({ accounts, users, bookings: bookingList() });
 });
 
 app.get('/api/accounts', requireAuth, (_req, res) => {
-  res.json(db.prepare('SELECT * FROM accounts ORDER BY created_at DESC').all());
+  res.json(db.prepare('SELECT * FROM accounts ORDER BY created_at ASC').all());
+});
+
+app.get('/api/account-names', requireAuth, (_req, res) => {
+  res.json(db.prepare('SELECT * FROM account_names ORDER BY created_at ASC').all());
+});
+
+app.post('/api/account-names', requireAuth, requireAdmin, (req, res) => {
+  const name = req.body.name?.trim();
+  if (!name) return res.status(400).json({ error: '名称不能为空' });
+  const duplicate = db.prepare('SELECT id FROM account_names WHERE name = ?').get(name);
+  if (duplicate) return res.status(409).json({ error: '这个名称已经存在' });
+  const id = nanoid();
+  db.prepare('INSERT INTO account_names (id, name, created_at) VALUES (?, ?, ?)').run(id, name, now());
+  audit(req.user.id, 'create', 'account_name', id, `新增账号名称 ${name}`);
+  res.json(db.prepare('SELECT * FROM account_names WHERE id = ?').get(id));
+});
+
+app.put('/api/account-names/:id', requireAuth, requireAdmin, (req, res) => {
+  const name = req.body.name?.trim();
+  if (!name) return res.status(400).json({ error: '名称不能为空' });
+  const duplicate = db.prepare('SELECT id FROM account_names WHERE name = ? AND id != ?').get(name, req.params.id);
+  if (duplicate) return res.status(409).json({ error: '这个名称已经存在' });
+  const old = db.prepare('SELECT * FROM account_names WHERE id = ?').get(req.params.id);
+  if (!old) return res.status(404).json({ error: '名称不存在' });
+  db.prepare('UPDATE account_names SET name = ? WHERE id = ?').run(name, req.params.id);
+  audit(req.user.id, 'update', 'account_name', req.params.id, `修改账号名称 ${old.name} -> ${name}`);
+  res.json(db.prepare('SELECT * FROM account_names WHERE id = ?').get(req.params.id));
+});
+
+app.delete('/api/account-names/:id', requireAuth, requireAdmin, (req, res) => {
+  const old = db.prepare('SELECT * FROM account_names WHERE id = ?').get(req.params.id);
+  db.prepare('DELETE FROM account_names WHERE id = ?').run(req.params.id);
+  audit(req.user.id, 'delete', 'account_name', req.params.id, `删除账号名称 ${old?.name || req.params.id}`);
+  res.json({ ok: true });
 });
 
 app.post('/api/accounts', requireAuth, requireAdmin, (req, res) => {
@@ -493,6 +527,10 @@ app.post('/api/admin/import', requireAuth, requireAdmin, upload.single('file'), 
     payload = JSON.parse(zip.readAsText('data.json'));
     if (manifest.app !== 'cute-schedule' || manifest.version !== 1) throw new Error('版本不匹配');
     for (const table of TABLES) {
+      if (table === 'account_names' && !Array.isArray(payload[table])) {
+        const names = Array.from(new Set((payload.accounts || []).map((account) => String(account.name || '').trim()).filter(Boolean)));
+        payload[table] = names.map((name) => ({ id: nanoid(), name, created_at: now() }));
+      }
       if (!Array.isArray(payload[table])) throw new Error(`缺少 ${table}`);
     }
   } catch (error) {

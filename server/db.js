@@ -9,7 +9,7 @@ export const db = new Database(dbPath);
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
-export const TABLES = ['settings', 'users', 'accounts', 'bookings', 'audit_logs'];
+export const TABLES = ['settings', 'users', 'accounts', 'account_names', 'bookings', 'audit_logs'];
 
 export function migrate() {
   db.exec(`
@@ -34,6 +34,12 @@ export function migrate() {
       password TEXT NOT NULL,
       remark TEXT DEFAULT '',
       status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS account_names (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
       created_at TEXT NOT NULL
     );
 
@@ -70,6 +76,19 @@ export function migrate() {
   ];
   const stmt = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
   defaults.forEach((row) => stmt.run(row));
+
+  const existingNames = db.prepare('SELECT COUNT(*) as count FROM account_names').get();
+  if (existingNames.count === 0) {
+    const insertName = db.prepare('INSERT OR IGNORE INTO account_names (id, name, created_at) VALUES (?, ?, ?)');
+    const names = db.prepare("SELECT DISTINCT name FROM accounts WHERE TRIM(name) != '' ORDER BY created_at ASC").all();
+    for (const item of names) {
+      insertName.run(cryptoRandomId(), item.name, new Date().toISOString());
+    }
+  }
+}
+
+function cryptoRandomId() {
+  return `name-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
 export function isSetupComplete() {
@@ -91,6 +110,7 @@ export function replaceAllData(payload) {
     insertRows('settings', payload.settings);
     insertRows('users', payload.users);
     insertRows('accounts', payload.accounts);
+    insertRows('account_names', payload.account_names);
     insertRows('bookings', payload.bookings);
     insertRows('audit_logs', payload.audit_logs);
     db.exec('PRAGMA foreign_keys = ON;');

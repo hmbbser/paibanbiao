@@ -7,6 +7,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Clock3,
+  Copy,
   DatabaseBackup,
   Download,
   FileClock,
@@ -28,8 +29,9 @@ import './styles.css';
 
 type Role = 'admin' | 'user';
 type User = { id: string; username: string; role: Role; enabled: boolean; created_at: string; can_switch?: boolean };
-type AppSettings = { siteName: string; timezone: string; defaultView: string; exportVersion?: string; auditRetentionDays?: string; auditRetentionCustomDays?: string };
+type AppSettings = { siteName: string; timezone: string; defaultView: string; exportVersion?: string; auditRetentionDays?: string; auditRetentionCustomDays?: string; accountCopyFields?: string; nameScrollSeconds?: string; toastDurationSeconds?: string };
 type Account = { id: string; name: string; login: string; password: string; remark: string; status: string; created_at: string };
+type AccountName = { id: string; name: string; created_at: string };
 type BookingStatus = 'reserved' | 'active' | 'completed' | 'ended_early' | 'cancelled';
 type Booking = {
   id: string;
@@ -50,7 +52,7 @@ type Booking = {
 type AuditLog = { id: string; actor_name?: string; action: string; entity_type: string; summary: string; created_at: string };
 type Overview = { accounts: Account[]; users: User[]; bookings: Booking[] };
 
-const defaultSettings: AppSettings = { siteName: '甜排班', timezone: 'Asia/Shanghai', defaultView: 'day', auditRetentionDays: '7' };
+const defaultSettings: AppSettings = { siteName: '甜排班', timezone: 'Asia/Shanghai', defaultView: 'day', auditRetentionDays: '7', accountCopyFields: 'name,login,password,status', nameScrollSeconds: '8', toastDurationSeconds: '1' };
 const localMockEnabled = typeof window !== 'undefined' && ['localhost', '127.0.0.1'].includes(window.location.hostname);
 
 const statusText: Record<BookingStatus, string> = {
@@ -93,8 +95,25 @@ async function api<T>(url: string, options: RequestInit = {}): Promise<T> {
   return data;
 }
 
+async function copyTextToClipboard(text: string) {
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable');
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const input = document.createElement('textarea');
+    input.value = text;
+    input.style.position = 'fixed';
+    input.style.opacity = '0';
+    document.body.appendChild(input);
+    input.select();
+    document.execCommand('copy');
+    input.remove();
+  }
+}
+
 type MockState = Overview & {
   settings: AppSettings;
+  accountNames: AccountName[];
   auditLogs: AuditLog[];
   sessionUserId: string;
   switchRootUserId?: string;
@@ -145,6 +164,11 @@ function createMockState(): MockState {
     settings: { ...defaultSettings, siteName: '账号出租管理系统', exportVersion: '0.2.3', auditRetentionDays: '7' },
     users: [admin, staff],
     accounts,
+    accountNames: uniqueNames(accounts.map((account) => account.name)).map((name, index) => ({
+      id: `name-${index + 1}`,
+      name,
+      created_at: mockNow(-59 + index)
+    })),
     bookings: [
       mockBooking('b-1', accounts[0], '张三', '138****1234', 0, 6, 'completed', admin),
       mockBooking('b-2', accounts[1], '周八', '159****1111', 9, 15, 'reserved', admin),
@@ -168,12 +192,29 @@ function loadMockState() {
     return initial;
   }
   try {
-    return JSON.parse(raw) as MockState;
+    return normalizeMockState(JSON.parse(raw) as MockState);
   } catch {
     const initial = createMockState();
     saveMockState(initial);
     return initial;
   }
+}
+
+function uniqueNames(names: string[]) {
+  return Array.from(new Set(names.map((name) => name.trim()).filter(Boolean)));
+}
+
+function normalizeMockState(state: MockState) {
+  if (!Array.isArray(state.accountNames)) {
+    state.accountNames = uniqueNames(state.accounts.map((account) => account.name)).map((name, index) => ({
+      id: `name-${index + 1}`,
+      name,
+      created_at: mockNow(-59 + index)
+    }));
+    saveMockState(state);
+  }
+  state.settings = { ...defaultSettings, ...state.settings };
+  return state;
 }
 
 function saveMockState(state: MockState) {
@@ -353,10 +394,16 @@ async function mockApi<T>(url: string, options: RequestInit = {}): Promise<T> {
         const importedUsers = imported.users;
         const importedAccounts = imported.accounts;
         const importedBookings = imported.bookings;
+        const importedAccountNames = imported.accountNames || uniqueNames(importedAccounts.map((account) => account.name)).map((name, index) => ({
+          id: `name-${index + 1}`,
+          name,
+          created_at: new Date().toISOString()
+        }));
         saveMockState({
           settings: { ...defaultSettings, ...imported.settings },
           users: importedUsers,
           accounts: importedAccounts,
+          accountNames: importedAccountNames,
           bookings: importedBookings,
           auditLogs: imported.auditLogs || [],
           sessionUserId: imported.sessionUserId || importedUsers[0]?.id || '',
@@ -379,10 +426,41 @@ async function mockApi<T>(url: string, options: RequestInit = {}): Promise<T> {
       status: body.status || 'active',
       created_at: new Date().toISOString()
     };
-    state.accounts.unshift(account);
+    state.accounts.push(account);
     addMockAudit(state, sessionUser, 'create', 'account', `新增账号 ${account.name}`);
     saveMockState(state);
     return ok(account);
+  }
+  const accountNameMatch = url.match(/^\/api\/account-names\/(.+)$/);
+  if (url === '/api/account-names' && method === 'GET') return ok(state.accountNames);
+  if (url === '/api/account-names' && method === 'POST') {
+    const body = readBody<Partial<AccountName>>(options);
+    const name = body.name?.trim();
+    if (!name) return fail('名称不能为空');
+    if (state.accountNames.some((item) => item.name === name)) return fail('这个名称已经存在');
+    const item: AccountName = { id: crypto.randomUUID(), name, created_at: new Date().toISOString() };
+    state.accountNames.push(item);
+    addMockAudit(state, sessionUser, 'create', 'account_name', `新增账号名称 ${name}`);
+    saveMockState(state);
+    return ok(item);
+  }
+  if (accountNameMatch && method === 'PUT') {
+    const body = readBody<Partial<AccountName>>(options);
+    const name = body.name?.trim();
+    if (!name) return fail('名称不能为空');
+    if (state.accountNames.some((item) => item.id !== accountNameMatch[1] && item.name === name)) return fail('这个名称已经存在');
+    const old = state.accountNames.find((item) => item.id === accountNameMatch[1]);
+    state.accountNames = state.accountNames.map((item) => item.id === accountNameMatch[1] ? { ...item, name } : item);
+    addMockAudit(state, sessionUser, 'update', 'account_name', `修改账号名称 ${old?.name || accountNameMatch[1]} -> ${name}`);
+    saveMockState(state);
+    return ok(state.accountNames.find((item) => item.id === accountNameMatch[1]));
+  }
+  if (accountNameMatch && method === 'DELETE') {
+    const old = state.accountNames.find((item) => item.id === accountNameMatch[1]);
+    state.accountNames = state.accountNames.filter((item) => item.id !== accountNameMatch[1]);
+    addMockAudit(state, sessionUser, 'delete', 'account_name', `删除账号名称 ${old?.name || accountNameMatch[1]}`);
+    saveMockState(state);
+    return ok({ success: true });
   }
   if (accountMatch && method === 'PUT') {
     const body = readBody<Partial<Account>>(options);
@@ -704,6 +782,12 @@ function Dashboard({
     return () => window.clearTimeout(timer);
   }, [active]);
 
+  useEffect(() => {
+    if (!error) return;
+    const timer = window.setTimeout(() => setError(''), getToastDurationMs(settings));
+    return () => window.clearTimeout(timer);
+  }, [error, settings]);
+
   async function refresh() {
     const data = await api<Overview>('/api/overview');
     setOverview({ ...data, bookings: data.bookings.map(withAutoBookingStatus) });
@@ -732,7 +816,7 @@ function Dashboard({
   });
 
   return (
-    <div className="app-shell">
+    <div className="app-shell" style={{ '--toast-duration': `${getToastDurationMs(settings)}ms` } as React.CSSProperties}>
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark">
@@ -771,10 +855,11 @@ function Dashboard({
         </header>
 
         <section className="content">
-          {error && <div className="toast">{error}<button onClick={() => setError('')}><X size={14} /></button></div>}
+          <NoticeToast message={error} tone="danger" />
           {active === 'timeline' && (
             <Timeline
               user={user}
+              settings={settings}
               users={overview.users}
               accounts={filteredAccounts}
               bookings={filteredBookings}
@@ -787,7 +872,7 @@ function Dashboard({
                 onEdit={(booking) => setViewing(booking)}
               />
             )}
-          {active === 'accounts' && <AccountsPanel user={user} accounts={overview.accounts} refresh={refresh} />}
+          {active === 'accounts' && <AccountsPanel user={user} settings={settings} accounts={overview.accounts} refresh={refresh} />}
           {active === 'users' && user.role === 'admin' && <UsersPanel users={overview.users} refresh={refresh} />}
           {active === 'records' && (
             <RecordsPanel
@@ -799,7 +884,7 @@ function Dashboard({
               onEdit={(booking) => { setEditing(booking); setDrawerOpen(true); }}
             />
           )}
-          {active === 'backup' && user.role === 'admin' && <BackupPanel />}
+          {active === 'backup' && user.role === 'admin' && <BackupPanel settings={settings} />}
           {active === 'settings' && <SettingsPanel user={user} settings={settings} onSettings={onSettings} />}
           {pageLoading && <div className="page-loader"><span /></div>}
         </section>
@@ -822,6 +907,7 @@ function Dashboard({
       {viewing && (
         <BookingDetailModal
           booking={viewing}
+          settings={settings}
           onClose={() => setViewing(null)}
           onDeleted={async () => {
             setViewing(null);
@@ -838,6 +924,7 @@ function Dashboard({
       {accountViewing && (
         <AccountDetailModal
           account={accountViewing}
+          settings={settings}
           onClose={() => setAccountViewing(null)}
           onDeleted={user.role === 'admin' ? async () => {
             setAccountViewing(null);
@@ -846,6 +933,10 @@ function Dashboard({
           onEdit={user.role === 'admin' ? () => {
             setAccountEditing(accountViewing);
             setAccountViewing(null);
+          } : undefined}
+          onStatusChanged={user.role === 'admin' ? async (nextAccount) => {
+            setAccountViewing(nextAccount);
+            await refresh();
           } : undefined}
         />
       )}
@@ -865,6 +956,7 @@ function Dashboard({
 
 function Timeline({
   user,
+  settings,
   users,
   accounts,
   bookings,
@@ -877,6 +969,7 @@ function Timeline({
   onEdit
 }: {
   user: User;
+  settings: AppSettings;
   users: User[];
   accounts: Account[];
   bookings: Booking[];
@@ -891,13 +984,31 @@ function Timeline({
   const [statusFilter, setStatusFilter] = useState<BookingStatus | 'all' | 'conflict'>('all');
   const [selectedDate, setSelectedDate] = useState(() => getLocalDateValue(new Date()));
   const [recordMode, setRecordMode] = useState<'today' | 'recent'>('today');
+  const [nameFilter, setNameFilter] = useState<string[]>([]);
+  const schedulerRef = useRef<HTMLDivElement>(null);
+  const schedulerDrag = useRef({
+    active: false,
+    moved: false,
+    captured: false,
+    pointerId: -1,
+    startX: 0,
+    startY: 0,
+    scrollLeft: 0,
+    scrollTop: 0,
+    suppressClickUntil: 0
+  });
   const autoBookings = useMemo(() => bookings.map(withAutoBookingStatus), [bookings]);
+  const selectedNameSet = useMemo(() => new Set(nameFilter), [nameFilter]);
+  const accountNameById = useMemo(() => new Map(accounts.map((account) => [account.id, account.name])), [accounts]);
+  const hasNameFilter = selectedNameSet.size > 0;
+  const matchAccountName = (name?: string) => !hasNameFilter || selectedNameSet.has(name || '');
   const start = new Date(`${selectedDate}T00:00:00`);
   const end = new Date(start);
   end.setHours(24);
   const isSelectedToday = selectedDate === getLocalDateValue(new Date());
   const activeBookings = autoBookings.filter((booking) => {
     if (booking.status === 'cancelled') return false;
+    if (!matchAccountName(booking.account_name || accountNameById.get(booking.account_id))) return false;
     const bookingStart = new Date(booking.starts_at);
     const bookingEnd = new Date(booking.ends_at);
     return bookingEnd > start && bookingStart < end;
@@ -910,9 +1021,11 @@ function Timeline({
     return booking.status === statusFilter;
   });
   const visibleBookingAccountIds = new Set(visibleBookings.map((booking) => booking.account_id));
-  const visibleAccounts = accounts.filter((account) => account.status === 'active' || visibleBookingAccountIds.has(account.id));
-  const activeAccountCount = accounts.filter((account) => account.status === 'active').length;
-  const miniBookings = recordMode === 'today' ? visibleBookings : autoBookings.filter((booking) => booking.status !== 'cancelled').slice(0, 8);
+  const visibleAccounts = accounts.filter((account) => matchAccountName(account.name) && (account.status === 'active' || visibleBookingAccountIds.has(account.id)));
+  const activeAccountCount = accounts.filter((account) => matchAccountName(account.name) && account.status === 'active').length;
+  const miniBookings = recordMode === 'today'
+    ? visibleBookings
+    : autoBookings.filter((booking) => booking.status !== 'cancelled' && matchAccountName(booking.account_name || accountNameById.get(booking.account_id))).slice(0, 8);
   const currentLeft = percentBetween(new Date(), start, end);
   const metrics = {
     today: activeBookings.length,
@@ -923,10 +1036,63 @@ function Timeline({
     reserved: activeBookings.filter((booking) => booking.status === 'reserved').length
   };
 
+  function ownerClass(booking: Booking) {
+    return booking.operator_id === user.id ? 'is-mine' : 'is-others';
+  }
+
   function shiftDate(days: number) {
     const date = new Date(`${selectedDate}T00:00:00`);
     date.setDate(date.getDate() + days);
     setSelectedDate(getLocalDateValue(date));
+  }
+
+  function startSchedulerDrag(event: React.PointerEvent<HTMLDivElement>) {
+    if (event.button !== 0) return;
+    const target = event.currentTarget;
+    schedulerDrag.current = {
+      active: true,
+      moved: false,
+      captured: false,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      scrollLeft: target.scrollLeft,
+      scrollTop: target.scrollTop,
+      suppressClickUntil: 0
+    };
+  }
+
+  function moveSchedulerDrag(event: React.PointerEvent<HTMLDivElement>) {
+    const drag = schedulerDrag.current;
+    if (!drag.active || drag.pointerId !== event.pointerId) return;
+    const dx = event.clientX - drag.startX;
+    const dy = event.clientY - drag.startY;
+    if (!drag.moved && Math.hypot(dx, dy) > 4) {
+      drag.moved = true;
+      drag.captured = true;
+      event.currentTarget.classList.add('is-dragging');
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+    }
+    if (!drag.moved) return;
+    event.preventDefault();
+    event.currentTarget.scrollLeft = drag.scrollLeft - dx;
+    event.currentTarget.scrollTop = drag.scrollTop - dy;
+  }
+
+  function endSchedulerDrag(event: React.PointerEvent<HTMLDivElement>) {
+    const drag = schedulerDrag.current;
+    if (!drag.active || drag.pointerId !== event.pointerId) return;
+    if (drag.moved) drag.suppressClickUntil = Date.now() + 90;
+    drag.active = false;
+    event.currentTarget.classList.remove('is-dragging');
+    if (drag.captured) event.currentTarget.releasePointerCapture?.(event.pointerId);
+  }
+
+  function suppressDraggedClick(event: React.MouseEvent<HTMLDivElement>) {
+    if (Date.now() <= schedulerDrag.current.suppressClickUntil) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
   }
 
   return (
@@ -956,6 +1122,7 @@ function Timeline({
       </div>
 
       <div className="status-filter">
+        <AccountNameFilter accounts={accounts} selected={nameFilter} onChange={setNameFilter} compact />
         <button type="button" className={statusFilter === 'all' ? 'active' : ''} onClick={() => setStatusFilter('all')}>全部</button>
         <button type="button" className={statusFilter === 'reserved' ? 'active' : ''} onClick={() => setStatusFilter('reserved')}><span className="dot reserved" />预约</button>
         <button type="button" className={statusFilter === 'active' ? 'active' : ''} onClick={() => setStatusFilter('active')}><span className="dot active" />出租中</button>
@@ -963,7 +1130,15 @@ function Timeline({
         <button type="button" className={statusFilter === 'conflict' ? 'active' : ''} onClick={() => setStatusFilter('conflict')}><span className="dot cancelled" />冲突</button>
       </div>
 
-      <div className="scheduler">
+      <div
+        className="scheduler"
+        ref={schedulerRef}
+        onPointerDown={startSchedulerDrag}
+        onPointerMove={moveSchedulerDrag}
+        onPointerUp={endSchedulerDrag}
+        onPointerCancel={endSchedulerDrag}
+        onClickCapture={suppressDraggedClick}
+      >
         <div className="time-head account-head">账号小窝</div>
         {Array.from({ length: 24 }, (_, index) => (
           <div className="time-head" key={index}>
@@ -990,7 +1165,7 @@ function Timeline({
                 }}
               >
                 <div className="account-line">
-                  <strong>{account.name}</strong>
+                  <strong><MarqueeText text={account.name} settings={settings} /></strong>
                   <span className={accountActive ? 'account-status available' : 'account-status disabled'}><i />{accountStatusText}</span>
                 </div>
                 <span>账号：{account.login}</span>
@@ -1030,7 +1205,7 @@ function Timeline({
                   const hasConflict = conflictIds.has(booking.id);
                   return (
                     <button
-                      className={`booking-bar ${booking.status} ${crossesDay ? 'cross-day' : ''} ${hasConflict ? 'has-conflict' : ''}`}
+                      className={`booking-bar ${booking.status} ${ownerClass(booking)} ${crossesDay ? 'cross-day' : ''} ${hasConflict ? 'has-conflict' : ''}`}
                       key={booking.id}
                       style={{ left: `${left}%`, width: `${Math.max(right - left, 4)}%`, top: `${20 + (rowLanes.byId.get(booking.id) || 0) * 72}px` }}
                       title={`租客：${booking.renter_name}\n联系方式：${booking.renter_contact || '-'}\n账号：${booking.account_name || '-'}\n时间：${formatDateTime(booking.starts_at)} - ${formatDateTime(booking.ends_at)}\n状态：${hasConflict ? '冲突 · ' : ''}${statusText[booking.status]}\n操作人：${booking.operator_name || '-'}`}
@@ -1072,7 +1247,7 @@ function Timeline({
           <span>操作人</span>
         </div>
         {miniBookings.slice(0, 8).map((booking) => (
-          <button type="button" className="mini-record-row" key={booking.id} onClick={() => onEdit(booking)}>
+          <button type="button" className={`mini-record-row ${ownerClass(booking)}`} key={booking.id} onClick={() => onEdit(booking)}>
             <span>{formatTime(booking.starts_at)}</span>
             <span>{booking.account_name}</span>
             <strong>{booking.renter_name}</strong>
@@ -1094,7 +1269,7 @@ function Timeline({
               <small>{account.remark || '暂无备注'}</small>
             </div>
             {visibleBookings.filter((booking) => booking.account_id === account.id).map((booking) => (
-              <button className={`mobile-booking ${booking.status}`} key={booking.id} onClick={() => onEdit(booking)}>
+              <button className={`mobile-booking ${booking.status} ${ownerClass(booking)}`} key={booking.id} onClick={() => onEdit(booking)}>
                 <span>{statusText[booking.status]}</span>
                 <strong>{booking.renter_name}</strong>
                 <small>{formatTime(booking.starts_at)} - {formatTime(booking.ends_at)}</small>
@@ -1537,12 +1712,14 @@ function BookingDrawer({
 
 function BookingDetailModal({
   booking,
+  settings,
   onClose,
   onDeleted,
   onEdit,
   canEdit
 }: {
   booking: Booking;
+  settings: AppSettings;
   onClose: () => void;
   onDeleted: () => void | Promise<void>;
   onEdit: () => void;
@@ -1550,6 +1727,18 @@ function BookingDetailModal({
 }) {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [copyToast, setCopyToast] = useState('');
+  const copyToastTimer = useRef<number | null>(null);
+
+  useEffect(() => () => {
+    if (copyToastTimer.current) window.clearTimeout(copyToastTimer.current);
+  }, []);
+
+  function showCopyToast(message: string) {
+    if (copyToastTimer.current) window.clearTimeout(copyToastTimer.current);
+    setCopyToast(message);
+    copyToastTimer.current = window.setTimeout(() => setCopyToast(''), getToastDurationMs(settings));
+  }
 
   async function deleteBooking() {
     setDeleting(true);
@@ -1560,6 +1749,16 @@ function BookingDetailModal({
     } finally {
       setDeleting(false);
     }
+  }
+
+  async function copyBooking() {
+    await copyTextToClipboard(buildBookingCopyText(booking));
+    showCopyToast('复制成功');
+  }
+
+  async function copyField(value: string) {
+    await copyTextToClipboard(value);
+    showCopyToast('复制成功');
   }
 
   return (
@@ -1573,23 +1772,22 @@ function BookingDetailModal({
           <button className="icon-btn" onClick={onClose}><X size={18} /></button>
         </div>
         <div className="detail-grid">
-          <DetailItem label="账号名称" value={booking.account_name || '-'} />
-          <DetailItem label="租客姓名" value={booking.renter_name} />
-          <DetailItem label="联系方式" value={booking.renter_contact || '-'} />
-          <DetailItem label="开始时间" value={formatDateTime(booking.starts_at)} />
-          <DetailItem label="结束时间" value={formatDateTime(booking.ends_at)} />
-          <DetailItem label="当前状态" value={statusText[booking.status]} />
-          <DetailItem label="操作人" value={booking.operator_name || '-'} />
-          <DetailItem label="备注" value={booking.remark || '-'} />
+          <DetailItem label="账号名称" value={booking.account_name || '-'} onCopy={copyField} />
+          <DetailItem label="租客姓名" value={booking.renter_name} onCopy={copyField} />
+          <DetailItem label="联系方式" value={booking.renter_contact || '-'} onCopy={copyField} />
+          <DetailItem label="开始时间" value={formatDateTime(booking.starts_at)} onCopy={copyField} />
+          <DetailItem label="结束时间" value={formatDateTime(booking.ends_at)} onCopy={copyField} />
+          <DetailItem label="当前状态" value={statusText[booking.status]} onCopy={copyField} />
+          <DetailItem label="操作人" value={booking.operator_name || '-'} onCopy={copyField} />
+          <DetailItem label="备注" value={booking.remark || '-'} onCopy={copyField} />
         </div>
-        <div className="modal-actions detail-actions split-actions">
+        <div className={`modal-actions detail-actions account-detail-actions ${canEdit ? '' : 'single-action'}`}>
+          <button className="soft-btn" onClick={copyBooking}><Copy size={16} />复制</button>
+          {canEdit && <button className="primary" onClick={onEdit}>编辑出租</button>}
           {canEdit && <button className="danger-btn" onClick={() => setDeleteOpen(true)}><Trash2 size={16} />删除</button>}
-          <div className="row-actions">
-            <button className="soft-btn" onClick={onClose}>关闭</button>
-            {canEdit && <button className="primary" onClick={onEdit}>编辑出租</button>}
-          </div>
         </div>
       </section>
+      <NoticeToast message={copyToast} tone="success" />
       {deleteOpen && (
         <ConfirmModal
           title="确认删除出租"
@@ -1605,9 +1803,147 @@ function BookingDetailModal({
   );
 }
 
-function AccountDetailModal({ account, onClose, onDeleted, onEdit }: { account: Account; onClose: () => void; onDeleted?: () => void | Promise<void>; onEdit?: () => void }) {
+function buildBookingCopyText(booking: Booking) {
+  return [
+    ['账号名称', booking.account_name || '-'],
+    ['租客姓名', booking.renter_name || '-'],
+    ['联系方式', booking.renter_contact || '-'],
+    ['开始时间', formatDateTime(booking.starts_at)],
+    ['结束时间', formatDateTime(booking.ends_at)],
+    ['当前状态', statusText[booking.status]],
+    ['操作人', booking.operator_name || '-'],
+    ['备注', booking.remark || '-']
+  ].map(([label, value]) => `${label}：${value}`).join('------');
+}
+
+const accountCopyFieldOptions = [
+  { key: 'name', label: '\u8d26\u53f7\u540d\u79f0' },
+  { key: 'login', label: '\u8d26\u53f7' },
+  { key: 'password', label: '\u5bc6\u7801' },
+  { key: 'status', label: '\u72b6\u6001' },
+  { key: 'remark', label: '\u5907\u6ce8' },
+  { key: 'created_at', label: '\u521b\u5efa\u65f6\u95f4' }
+] as const;
+
+function accountCopyValue(account: Account, key: string) {
+  if (key === 'name') return account.name;
+  if (key === 'login') return account.login;
+  if (key === 'password') return account.password;
+  if (key === 'status') return account.status === 'active' ? '\u6b63\u5e38' : '\u505c\u7528';
+  if (key === 'remark') return account.remark || '-';
+  if (key === 'created_at') return formatDateTime(account.created_at);
+  return '';
+}
+
+function buildAccountCopyText(account: Account, settings: AppSettings) {
+  const selected = (settings.accountCopyFields || defaultSettings.accountCopyFields || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const fields = selected.length ? selected : ['name', 'login', 'password', 'status'];
+  return fields
+    .map((key) => {
+      const option = accountCopyFieldOptions.find((item) => item.key === key);
+      if (!option) return null;
+      return `${option.label}\uff1a${accountCopyValue(account, key)}`;
+    })
+    .filter(Boolean)
+    .join('------');
+}
+
+function getNameScrollSeconds(settings: AppSettings) {
+  const raw = Number(settings.nameScrollSeconds || defaultSettings.nameScrollSeconds || 8);
+  if (!Number.isFinite(raw)) return 8;
+  return Math.min(30, Math.max(3, raw));
+}
+
+function getToastDurationMs(settings: AppSettings) {
+  const raw = Number(settings.toastDurationSeconds || defaultSettings.toastDurationSeconds || 1);
+  const seconds = Number.isFinite(raw) ? Math.min(10, Math.max(0.5, raw)) : 1;
+  return Math.round(seconds * 1000);
+}
+
+function shouldScrollName(text: string) {
+  return text.trim().length > 7;
+}
+
+function MarqueeText({ text, settings }: { text: string; settings: AppSettings }) {
+  const long = shouldScrollName(text);
+  const containerRef = useRef<HTMLSpanElement>(null);
+  const textRef = useRef<HTMLSpanElement>(null);
+  const [motion, setMotion] = useState(() => ({
+    duration: getNameScrollSeconds(settings),
+    start: 0,
+    end: 0
+  }));
+
+  useLayoutEffect(() => {
+    if (!long) {
+      setMotion({ duration: getNameScrollSeconds(settings), start: 0, end: 0 });
+      return undefined;
+    }
+    const container = containerRef.current;
+    const label = textRef.current;
+    if (!container || !label) return undefined;
+
+    const updateDuration = () => {
+      const baseSeconds = getNameScrollSeconds(settings);
+      const pixelsPerSecond = 120 / baseSeconds;
+      const start = container.clientWidth;
+      const end = label.scrollWidth;
+      const distance = Math.max(start + end, 120);
+      setMotion({ duration: distance / pixelsPerSecond, start, end });
+    };
+
+    updateDuration();
+    const observer = new ResizeObserver(updateDuration);
+    observer.observe(container);
+    observer.observe(label);
+    return () => observer.disconnect();
+  }, [long, settings.nameScrollSeconds, text]);
+
+  const style = {
+    '--marquee-duration': `${motion.duration}s`,
+    '--marquee-start': `${motion.start}px`,
+    '--marquee-end': `${motion.end}px`
+  } as React.CSSProperties;
+  return (
+    <span ref={containerRef} className={`marquee-text ${long ? 'is-long' : ''}`} style={style} title={text}>
+      <span ref={textRef}>{text}</span>
+    </span>
+  );
+}
+
+function AccountDetailModal({
+  account,
+  settings,
+  onClose,
+  onDeleted,
+  onEdit,
+  onStatusChanged
+}: {
+  account: Account;
+  settings: AppSettings;
+  onClose: () => void;
+  onDeleted?: () => void | Promise<void>;
+  onEdit?: () => void;
+  onStatusChanged?: (account: Account) => void | Promise<void>;
+}) {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [statusChanging, setStatusChanging] = useState(false);
+  const [copyToast, setCopyToast] = useState('');
+  const copyToastTimer = useRef<number | null>(null);
+
+  useEffect(() => () => {
+    if (copyToastTimer.current) window.clearTimeout(copyToastTimer.current);
+  }, []);
+
+  function showCopyToast(message: string) {
+    if (copyToastTimer.current) window.clearTimeout(copyToastTimer.current);
+    setCopyToast(message);
+    copyToastTimer.current = window.setTimeout(() => setCopyToast(''), getToastDurationMs(settings));
+  }
 
   async function deleteAccount() {
     setDeleting(true);
@@ -1620,6 +1956,33 @@ function AccountDetailModal({ account, onClose, onDeleted, onEdit }: { account: 
     }
   }
 
+  async function copyAccount() {
+    const text = buildAccountCopyText(account, settings);
+    await copyTextToClipboard(text);
+    showCopyToast('复制成功');
+  }
+
+  async function copyField(value: string) {
+    await copyTextToClipboard(value);
+    showCopyToast('复制成功');
+  }
+
+  async function toggleAccountStatus() {
+    const nextStatus = account.status === 'active' ? 'disabled' : 'active';
+    const nextAccount = { ...account, status: nextStatus };
+    setStatusChanging(true);
+    try {
+      await api(`/api/accounts/${account.id}`, {
+        method: 'PUT',
+        body: JSON.stringify(nextAccount)
+      });
+      await onStatusChanged?.(nextAccount);
+      showCopyToast(nextStatus === 'active' ? '账号已恢复正常' : '账号已停用');
+    } finally {
+      setStatusChanging(false);
+    }
+  }
+
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <section className="admin-modal compact detail-modal" onClick={(event) => event.stopPropagation()}>
@@ -1628,24 +1991,38 @@ function AccountDetailModal({ account, onClose, onDeleted, onEdit }: { account: 
             <span>账号详情</span>
             <h2>{account.name}</h2>
           </div>
-          <button className="icon-btn" onClick={onClose}><X size={18} /></button>
-        </div>
-        <div className="detail-grid">
-          <DetailItem label="账号名称" value={account.name} />
-          <DetailItem label="账号" value={account.login} />
-          <DetailItem label="密码" value={account.password} />
-          <DetailItem label="状态" value={account.status === 'active' ? '正常' : '停用'} />
-          <DetailItem label="备注" value={account.remark || '-'} />
-          <DetailItem label="创建时间" value={formatDateTime(account.created_at)} />
-        </div>
-        <div className="modal-actions detail-actions split-actions">
-          {onDeleted && <button className="danger-btn" onClick={() => setDeleteOpen(true)}><Trash2 size={16} />删除</button>}
-          <div className="row-actions">
-            <button className="soft-btn" onClick={onClose}>关闭</button>
-            {onEdit && <button className="primary" onClick={onEdit}>编辑账号</button>}
+          <div className="modal-title-actions">
+            {onStatusChanged && (
+              <button
+                type="button"
+                className={`detail-status-toggle ${account.status === 'active' ? 'on' : ''}`}
+                onClick={toggleAccountStatus}
+                disabled={statusChanging}
+                aria-pressed={account.status === 'active'}
+                title={account.status === 'active' ? '切换为停用' : '切换为正常'}
+              >
+                <span>{account.status === 'active' ? '正常' : '停用'}</span>
+                <i />
+              </button>
+            )}
+            <button className="icon-btn" onClick={onClose}><X size={18} /></button>
           </div>
         </div>
+        <div className="detail-grid">
+          <DetailItem label="账号名称" value={account.name} onCopy={copyField} />
+          <DetailItem label="账号" value={account.login} onCopy={copyField} />
+          <DetailItem label="密码" value={account.password} onCopy={copyField} />
+          <DetailItem label="状态" value={account.status === 'active' ? '正常' : '停用'} onCopy={copyField} />
+          <DetailItem label="备注" value={account.remark || '-'} onCopy={copyField} />
+          <DetailItem label="创建时间" value={formatDateTime(account.created_at)} onCopy={copyField} />
+        </div>
+        <div className="modal-actions detail-actions account-detail-actions">
+          <button className="soft-btn" onClick={copyAccount}><Copy size={16} />复制</button>
+          {onEdit && <button className="primary" onClick={onEdit}>{'\u7f16\u8f91\u8d26\u53f7'}</button>}
+          {onDeleted && <button className="danger-btn" onClick={() => setDeleteOpen(true)}><Trash2 size={16} />{'\u5220\u9664'}</button>}
+        </div>
       </section>
+      <NoticeToast message={copyToast} tone="success" />
       {deleteOpen && (
         <ConfirmModal
           title="确认删除账号"
@@ -1661,24 +2038,283 @@ function AccountDetailModal({ account, onClose, onDeleted, onEdit }: { account: 
   );
 }
 
-function DetailItem({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="detail-item">
+function DetailItem({ label, value, onCopy }: { label: string; value: string; onCopy?: (value: string) => void | Promise<void> }) {
+  const content = (
+    <>
       <span>{label}</span>
       <strong>{value}</strong>
+    </>
+  );
+  if (!onCopy) return <div className="detail-item">{content}</div>;
+  return (
+    <button type="button" className="detail-item detail-copy-item" onClick={() => onCopy(value)} title={`复制${label}`}>
+      {content}
+    </button>
+  );
+}
+
+function NoticeToast({ message, tone = 'danger' }: { message: string; tone?: 'danger' | 'success' | 'info' }) {
+  if (!message) return null;
+  return (
+    <div className={`app-toast ${tone}`} role="status" aria-live="polite">
+      <span>{message}</span>
     </div>
   );
 }
 
-function AccountsPanel({ user, accounts, refresh }: { user: User; accounts: Account[]; refresh: () => void }) {
+function uniqueAccountNames(accounts: Account[]) {
+  return Array.from(new Set(accounts.map((account) => account.name.trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'));
+}
+
+function AccountNameFilter({
+  accounts,
+  names,
+  selected,
+  onChange,
+  compact = false
+}: {
+  accounts: Account[];
+  names?: string[];
+  selected: string[];
+  onChange: (selected: string[]) => void;
+  compact?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const options = useMemo(() => names?.length ? names : uniqueAccountNames(accounts), [accounts, names]);
+  const selectedSet = useMemo(() => new Set(selected), [selected]);
+
+  useEffect(() => {
+    if (!open) return;
+    function close(event: PointerEvent) {
+      if (!ref.current?.contains(event.target as Node)) setOpen(false);
+    }
+    document.addEventListener('pointerdown', close);
+    return () => document.removeEventListener('pointerdown', close);
+  }, [open]);
+
+  useEffect(() => {
+    if (!selected.length) return;
+    const available = new Set(options);
+    const next = selected.filter((item) => available.has(item));
+    if (next.length !== selected.length) onChange(next);
+  }, [options, selected, onChange]);
+
+  function toggle(name: string) {
+    const next = selectedSet.has(name)
+      ? selected.filter((item) => item !== name)
+      : [...selected, name];
+    onChange(next);
+  }
+
+  function toggleOpen() {
+    setOpen((value) => !value);
+  }
+
+  return (
+    <div className={`game-filter ${compact ? 'compact' : ''}`} ref={ref}>
+      <button
+        type="button"
+        className={`game-filter-trigger ${selected.length ? 'active' : ''}`}
+        onClick={toggleOpen}
+        disabled={options.length === 0}
+      >
+        <Sparkles size={15} />
+        <span>{selected.length ? `\u5df2\u9009 ${selected.length}` : '\u6309\u540d\u79f0\u7b5b\u9009'}</span>
+        <ChevronDown size={14} />
+      </button>
+      {open && (
+        <div className="game-filter-menu">
+          <div className="game-filter-head">
+            <strong>{'\u9009\u62e9\u6e38\u620f/\u540d\u79f0'}</strong>
+            <button type="button" onClick={() => onChange([])} disabled={!selected.length}>{'\u6e05\u7a7a'}</button>
+          </div>
+          <div className="game-filter-options">
+            {options.map((name) => (
+              <label className="game-filter-option" key={name}>
+                <input type="checkbox" checked={selectedSet.has(name)} onChange={() => toggle(name)} />
+                <span>{name}</span>
+              </label>
+            ))}
+            {options.length === 0 && <p>{'\u6682\u65e0\u53ef\u7b5b\u9009\u540d\u79f0'}</p>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const pageSizeOptions = [5, 10, 20, 50];
+
+function clampPage(page: number, pageCount: number) {
+  return Math.min(Math.max(1, page), Math.max(1, pageCount));
+}
+
+function paginateItems<T>(items: T[], page: number, pageSize: number) {
+  const pageCount = Math.max(1, Math.ceil(items.length / pageSize));
+  const safePage = clampPage(page, pageCount);
+  const start = (safePage - 1) * pageSize;
+  return {
+    pageCount,
+    safePage,
+    items: items.slice(start, start + pageSize),
+    start: items.length ? start + 1 : 0,
+    end: Math.min(start + pageSize, items.length)
+  };
+}
+
+function pageNumbers(current: number, pageCount: number) {
+  const pages = new Set([1, pageCount, current - 1, current, current + 1]);
+  return Array.from(pages)
+    .filter((page) => page >= 1 && page <= pageCount)
+    .sort((a, b) => a - b);
+}
+
+function PageSizeDropdown({ value, onChange }: { value: number; onChange: (value: number) => void }) {
+  const [open, setOpen] = useState(false);
+  const [menuStyle, setMenuStyle] = useState<React.CSSProperties>({});
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function close(event: PointerEvent) {
+      if (!ref.current?.contains(event.target as Node)) setOpen(false);
+    }
+    document.addEventListener('pointerdown', close);
+    return () => document.removeEventListener('pointerdown', close);
+  }, [open]);
+
+  function toggleOpen() {
+    setOpen((next) => {
+      const willOpen = !next;
+      if (willOpen && ref.current) {
+        const rect = ref.current.getBoundingClientRect();
+        const bottomSpace = window.innerHeight - rect.bottom;
+        const topSpace = rect.top;
+        const openUp = bottomSpace < 180 && topSpace > bottomSpace;
+        setMenuStyle({
+          position: 'fixed',
+          left: `${rect.left}px`,
+          top: openUp ? 'auto' : `${rect.bottom + 8}px`,
+          bottom: openUp ? `${window.innerHeight - rect.top + 8}px` : 'auto',
+          width: `${rect.width}px`,
+          minWidth: `${Math.max(rect.width, 82)}px`
+        });
+      }
+      return willOpen;
+    });
+  }
+
+  return (
+    <div className="page-size-menu" ref={ref}>
+      <button type="button" className="page-size-trigger" onClick={toggleOpen} aria-expanded={open}>
+        <strong>{value}</strong>
+        <ChevronDown size={15} />
+      </button>
+      {open && (
+        <div className="page-size-options" style={menuStyle}>
+          {pageSizeOptions.map((size) => (
+            <button
+              type="button"
+              className={size === value ? 'active' : ''}
+              key={size}
+              onClick={() => {
+                onChange(size);
+                setOpen(false);
+              }}
+            >
+              {size}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PaginationControls({
+  total,
+  page,
+  pageSize,
+  onPage,
+  onPageSize
+}: {
+  total: number;
+  page: number;
+  pageSize: number;
+  onPage: (page: number) => void;
+  onPageSize: (pageSize: number) => void;
+}) {
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  const safePage = clampPage(page, pageCount);
+  const [jump, setJump] = useState(String(safePage));
+
+  useEffect(() => {
+    setJump(String(safePage));
+  }, [safePage]);
+
+  function jumpToPage(event: React.FormEvent) {
+    event.preventDefault();
+    const next = Number(jump);
+    if (Number.isFinite(next)) onPage(clampPage(Math.floor(next), pageCount));
+  }
+
+  return (
+    <div className="pagination-bar">
+      <div className="pagination-size">
+        <span>{'\u6bcf\u9875'}</span>
+        <PageSizeDropdown value={pageSize} onChange={(next) => { onPageSize(next); onPage(1); }} />
+        <span className="pagination-total">{`\u5171 ${total} \u6761 / ${pageCount} \u9875`}</span>
+      </div>
+      <div className="pagination-pages">
+        <button type="button" className="pager-btn" disabled={safePage <= 1} onClick={() => onPage(safePage - 1)}><ChevronLeft size={15} /></button>
+        {pageNumbers(safePage, pageCount).map((item, index, list) => (
+          <React.Fragment key={item}>
+            {index > 0 && item - list[index - 1] > 1 && <span className="pager-gap">...</span>}
+            <button type="button" className={`pager-btn ${item === safePage ? 'active' : ''}`} onClick={() => onPage(item)}>{item}</button>
+          </React.Fragment>
+        ))}
+        <button type="button" className="pager-btn" disabled={safePage >= pageCount} onClick={() => onPage(safePage + 1)}><ChevronRight size={15} /></button>
+      </div>
+      <form className="pagination-jump" onSubmit={jumpToPage}>
+        <span>{'\u8df3\u5230'}</span>
+        <input value={jump} onChange={(event) => setJump(event.target.value.replace(/[^\d]/g, ''))} inputMode="numeric" />
+        <button type="submit" className="soft-btn">{'\u786e\u5b9a'}</button>
+      </form>
+    </div>
+  );
+}
+
+function AccountsPanel({ user, settings, accounts, refresh }: { user: User; settings: AppSettings; accounts: Account[]; refresh: () => void }) {
   const [modal, setModal] = useState<Account | 'new' | null>(null);
+  const [nameManagerOpen, setNameManagerOpen] = useState(false);
+  const [accountNames, setAccountNames] = useState<AccountName[]>([]);
   const [search, setSearch] = useState('');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [toggleLoadingId, setToggleLoadingId] = useState('');
+  const [copyToast, setCopyToast] = useState('');
+  const copyToastTimer = useRef<number | null>(null);
+  const [nameFilter, setNameFilter] = useState<string[]>([]);
+  const [statusQuickFilter, setStatusQuickFilter] = useState<'all' | 'active' | 'disabled'>(() => {
+    if (typeof window === 'undefined') return 'all';
+    const saved = localStorage.getItem('account-status-quick-filter');
+    return saved === 'active' || saved === 'disabled' || saved === 'all' ? saved : 'all';
+  });
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
   const searchTerm = search.trim().toLowerCase();
+  const nameFilterKey = nameFilter.join('|');
+  const accountNameOptions = useMemo(() => {
+    const managed = accountNames.map((item) => item.name);
+    return uniqueNames([...managed, ...accounts.map((account) => account.name)]).sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'));
+  }, [accountNames, accounts]);
+  const selectedNameSet = useMemo(() => new Set(nameFilter), [nameFilter]);
   const visibleAccounts = accounts.filter((account) => {
+    if (selectedNameSet.size && !selectedNameSet.has(account.name)) return false;
+    if (statusQuickFilter === 'active' && account.status !== 'active') return false;
+    if (statusQuickFilter === 'disabled' && account.status === 'active') return false;
     if (!searchTerm) return true;
     const statusLabel = account.status === 'active' ? '正常' : '停用';
     const text = `${account.name} ${account.login} ${account.password} ${account.remark} ${statusLabel}`.toLowerCase();
@@ -1687,6 +2323,38 @@ function AccountsPanel({ user, accounts, refresh }: { user: User; accounts: Acco
   const accountTableClass = `account-table ${user.role === 'admin' ? 'manage' : 'readonly'}`;
   const visibleSelectedIds = visibleAccounts.filter((account) => selectedIds.has(account.id)).map((account) => account.id);
   const allVisibleSelected = visibleAccounts.length > 0 && visibleSelectedIds.length === visibleAccounts.length;
+  const pagedAccounts = paginateItems(visibleAccounts, page, pageSize);
+
+  useEffect(() => {
+    setPage(1);
+  }, [searchTerm, pageSize, accounts.length, nameFilterKey, statusQuickFilter]);
+
+  useEffect(() => {
+    localStorage.setItem('account-status-quick-filter', statusQuickFilter);
+  }, [statusQuickFilter]);
+
+  useEffect(() => {
+    loadAccountNames();
+  }, []);
+
+  useEffect(() => () => {
+    if (copyToastTimer.current) window.clearTimeout(copyToastTimer.current);
+  }, []);
+
+  function showCopyToast(message: string) {
+    if (copyToastTimer.current) window.clearTimeout(copyToastTimer.current);
+    setCopyToast(message);
+    copyToastTimer.current = window.setTimeout(() => setCopyToast(''), getToastDurationMs(settings));
+  }
+
+  async function loadAccountNames() {
+    const list = await api<AccountName[]>('/api/account-names');
+    setAccountNames(list);
+  }
+
+  async function refreshAccountsAndNames() {
+    await Promise.all([refresh(), loadAccountNames()]);
+  }
 
   function toggleSelected(id: string) {
     setSelectedIds((current) => {
@@ -1736,6 +2404,30 @@ function AccountsPanel({ user, accounts, refresh }: { user: User; accounts: Acco
     }
   }
 
+  async function copyAccount(account: Account) {
+    if (account.status !== 'active') {
+      showCopyToast('\u8be5\u8d26\u6237\u5df2\u7ecf\u6b7b\u4ea1 \u4e0d\u80fd\u590d\u5236');
+      return;
+    }
+    await copyTextToClipboard(buildAccountCopyText(account, settings));
+    showCopyToast('复制成功');
+  }
+
+  async function copyAccountField(account: Account, value: string) {
+    if (account.status !== 'active') {
+      showCopyToast('\u8be5\u8d26\u6237\u5df2\u7ecf\u6b7b\u4ea1 \u4e0d\u80fd\u590d\u5236');
+      return;
+    }
+    await copyTextToClipboard(value);
+    showCopyToast('复制成功');
+  }
+
+  const CopyValue = ({ account, value, className = '' }: { account: Account; value: string; className?: string }) => (
+    <button type="button" className={`copy-value ${className}`} onClick={() => copyAccountField(account, value)} title="点击复制">
+      {className.includes('copy-value-name') ? <MarqueeText text={value} settings={settings} /> : value}
+    </button>
+  );
+
   return (
     <Panel
       title="账号管理"
@@ -1743,21 +2435,30 @@ function AccountsPanel({ user, accounts, refresh }: { user: User; accounts: Acco
       action={user.role === 'admin' && <button className="primary" onClick={() => setModal('new')}><Plus size={16} />添加账号</button>}
     >
       <div className="admin-toolbar">
+        <button className="soft-btn refresh-action" onClick={refresh}><RefreshCw size={16} />刷新</button>
         <div className="searchbox table-search">
           <Search size={16} />
           <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索账号..." />
         </div>
-        <div className="row-actions">
-          {user.role === 'admin' && (
-            <button className="danger-btn" onClick={() => setBulkConfirmOpen(true)} disabled={selectedIds.size === 0}>
-              <Trash2 size={16} />
-              删除选中{selectedIds.size ? ` ${selectedIds.size}` : ''}
-            </button>
-          )}
-          <button className="soft-btn" onClick={refresh}><RefreshCw size={16} />刷新</button>
+        {user.role === 'admin' && (
+          <button className="soft-btn manage-name-action" onClick={() => setNameManagerOpen(true)}><Sparkles size={16} />管理名称</button>
+        )}
+        {user.role === 'admin' && selectedIds.size > 0 && (
+          <button className="danger-btn bulk-delete-action" onClick={() => setBulkConfirmOpen(true)}>
+            <Trash2 size={16} />
+            删除选中 {selectedIds.size}
+          </button>
+        )}
+        <div className="account-filter-tools">
+          <div className="status-quick-filter" aria-label="账号状态快捷筛选">
+            <button type="button" className={statusQuickFilter === 'all' ? 'active' : ''} onClick={() => setStatusQuickFilter('all')}>全部</button>
+            <button type="button" className={statusQuickFilter === 'active' ? 'active' : ''} onClick={() => setStatusQuickFilter('active')}>正常</button>
+            <button type="button" className={statusQuickFilter === 'disabled' ? 'active danger' : ''} onClick={() => setStatusQuickFilter('disabled')}>死亡</button>
+          </div>
+          <AccountNameFilter accounts={accounts} names={accountNameOptions} selected={nameFilter} onChange={setNameFilter} />
         </div>
       </div>
-      <div className="admin-table">
+      <div className={`admin-table ${user.role === 'admin' ? 'admin-account-table' : 'user-account-table'}`}>
         <div className={`admin-table-head ${accountTableClass}`}>
           {user.role === 'admin' && (
             <label className="table-check">
@@ -1770,18 +2471,18 @@ function AccountsPanel({ user, accounts, refresh }: { user: User; accounts: Acco
           <span>状态</span>
           <span>备注</span>
           <span>创建时间</span>
-          {user.role === 'admin' && <span>操作</span>}
+          <span>操作</span>
         </div>
-        {visibleAccounts.map((account) => (
-          <div className={`admin-table-row ${accountTableClass}`} key={account.id}>
+        {pagedAccounts.items.map((account) => (
+          <div className={`admin-table-row ${accountTableClass} ${account.status !== 'active' ? 'account-disabled-row' : ''}`} key={account.id}>
             {user.role === 'admin' && (
               <label className="table-check">
                 <input type="checkbox" checked={selectedIds.has(account.id)} onChange={() => toggleSelected(account.id)} aria-label={`选择${account.name}`} />
               </label>
             )}
-            <strong>{account.name}</strong>
-            <span>{account.login}</span>
-            <code>{account.password}</code>
+            <CopyValue account={account} value={account.name} className="copy-value-name" />
+            <CopyValue account={account} value={account.login} />
+            <CopyValue account={account} value={account.password} className="copy-value-code" />
             <div className="status-toggle-cell">
               <span className={`status-pill ${account.status === 'active' ? 'ok' : 'muted'}`}>{account.status === 'active' ? '正常' : '停用'}</span>
               {user.role === 'admin' && (
@@ -1797,30 +2498,116 @@ function AccountsPanel({ user, accounts, refresh }: { user: User; accounts: Acco
                 </button>
               )}
             </div>
-            <span>{account.remark || '-'}</span>
+            <CopyValue account={account} value={account.remark || '-'} />
             <span>{formatDateTime(account.created_at)}</span>
-            {user.role === 'admin' && (
-              <div className="row-actions">
-                <button className="ghost-action" onClick={() => setModal(account)}>编辑</button>
-                <DeleteButton
-                  url={`/api/accounts/${account.id}`}
-                  refresh={async () => {
-                    setSelectedIds((current) => {
-                      const next = new Set(current);
-                      next.delete(account.id);
-                      return next;
-                    });
-                    await refresh();
-                  }}
-                  body={`确定删除账号 ${account.name} 吗？相关出租记录也会一并删除。`}
-                />
-              </div>
-            )}
+            <div className="row-actions account-row-actions">
+              <button className="ghost-action copy-action" onClick={() => copyAccount(account)}><Copy size={14} />复制</button>
+              {user.role === 'admin' && (
+                <>
+                  <button className="ghost-action" onClick={() => setModal(account)}>编辑</button>
+                  <DeleteButton
+                    url={`/api/accounts/${account.id}`}
+                    refresh={async () => {
+                      setSelectedIds((current) => {
+                        const next = new Set(current);
+                        next.delete(account.id);
+                        return next;
+                      });
+                      await refresh();
+                    }}
+                    body={`确定删除账号 ${account.name} 吗？相关出租记录也会一并删除。`}
+                  />
+                </>
+              )}
+            </div>
           </div>
         ))}
         {visibleAccounts.length === 0 && <div className="empty-table">{accounts.length === 0 ? '还没有账号，点击右上角“添加账号”开始。' : '没有匹配的账号。'}</div>}
+      </div>      <div className="mobile-account-cards">
+        {visibleAccounts.map((account) => (
+          <article className={`mobile-account-card ${account.status !== 'active' ? 'account-disabled-card' : ''}`} key={account.id}>
+            <div className="mobile-account-card-head">
+              <div>
+                <CopyValue account={account} value={account.name} className="copy-value-name mobile-title-copy" />
+                <span>{account.status === 'active' ? '\u6b63\u5e38' : '\u505c\u7528'}</span>
+              </div>
+              {user.role === 'admin' ? (
+                <label className="table-check">
+                  <input type="checkbox" checked={selectedIds.has(account.id)} onChange={() => toggleSelected(account.id)} aria-label={`\u9009\u62e9${account.name}`} />
+                </label>
+              ) : (
+                <span className={`status-pill ${account.status === 'active' ? 'ok' : 'muted'}`}>{account.status === 'active' ? '\u6b63\u5e38' : '\u505c\u7528'}</span>
+              )}
+            </div>
+            <div className="mobile-account-fields">
+              <span>{'\u8d26\u53f7'}</span>
+              <CopyValue account={account} value={account.login} />
+              <span>{'\u5bc6\u7801'}</span>
+              <CopyValue account={account} value={account.password} className="copy-value-code" />
+              <span>{'\u5907\u6ce8'}</span>
+              <CopyValue account={account} value={account.remark || '-'} />
+            </div>
+            <div className="mobile-account-actions">
+              {user.role === 'admin' && (
+                <div className="status-toggle-cell">
+                  <span className={`status-pill ${account.status === 'active' ? 'ok' : 'muted'}`}>{account.status === 'active' ? '\u6b63\u5e38' : '\u505c\u7528'}</span>
+                  <button
+                    type="button"
+                    className={`switch-toggle ${account.status === 'active' ? 'on' : ''}`}
+                    onClick={() => toggleAccountStatus(account)}
+                    disabled={toggleLoadingId === account.id}
+                    aria-label={`${account.status === 'active' ? '\u505c\u7528' : '\u542f\u7528'}${account.name}`}
+                    title={account.status === 'active' ? '\u505c\u7528\u8d26\u53f7' : '\u542f\u7528\u8d26\u53f7'}
+                  >
+                    <span />
+                  </button>
+                </div>
+              )}
+              <div className="row-actions account-row-actions">
+                <button className="ghost-action copy-action" onClick={() => copyAccount(account)}><Copy size={14} />{'\u590d\u5236'}</button>
+                {user.role === 'admin' && (
+                  <>
+                    <button className="ghost-action" onClick={() => setModal(account)}>{'\u7f16\u8f91'}</button>
+                    <DeleteButton
+                      url={`/api/accounts/${account.id}`}
+                      refresh={async () => {
+                        setSelectedIds((current) => {
+                          const next = new Set(current);
+                          next.delete(account.id);
+                          return next;
+                        });
+                        await refresh();
+                      }}
+                      body={`\u786e\u5b9a\u5220\u9664\u8d26\u53f7 ${account.name} \u5417\uff1f\u76f8\u5173\u51fa\u79df\u8bb0\u5f55\u4e5f\u4f1a\u4e00\u5e76\u5220\u9664\u3002`}
+                    />
+                  </>
+                )}
+              </div>
+            </div>
+          </article>
+        ))}
+        {visibleAccounts.length === 0 && <div className="empty-table">{accounts.length === 0 ? '\u8fd8\u6ca1\u6709\u8d26\u53f7\u3002' : '\u6ca1\u6709\u5339\u914d\u7684\u8d26\u53f7\u3002'}</div>}
       </div>
-      {modal && <AccountModal account={modal === 'new' ? null : modal} onClose={() => setModal(null)} onSaved={async () => { await refresh(); setModal(null); }} />}
+      <PaginationControls total={visibleAccounts.length} page={pagedAccounts.safePage} pageSize={pageSize} onPage={setPage} onPageSize={setPageSize} />
+       <NoticeToast message={copyToast} tone={copyToast === '复制成功' ? 'success' : 'danger'} />
+      {modal && (
+        <AccountModal
+          account={modal === 'new' ? null : modal}
+          nameOptions={accountNameOptions}
+          onManageNames={() => setNameManagerOpen(true)}
+          onClose={() => setModal(null)}
+          onSaved={async () => { await refreshAccountsAndNames(); setModal(null); }}
+        />
+      )}
+      {nameManagerOpen && (
+        <AccountNameManagerModal
+          names={accountNames}
+          onClose={() => setNameManagerOpen(false)}
+          onChanged={async () => {
+            await loadAccountNames();
+          }}
+        />
+      )}
       {bulkConfirmOpen && (
         <ConfirmModal
           title="确认批量删除"
@@ -1892,6 +2679,8 @@ function UserPlusForm({ form, setForm, onSubmit }: { form: any; setForm: (next: 
 function UsersPanel({ users, refresh }: { users: User[]; refresh: () => void }) {
   const [modal, setModal] = useState<User | 'new' | null>(null);
   const [search, setSearch] = useState('');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
   const searchTerm = search.trim().toLowerCase();
   const visibleUsers = users.filter((item) => {
     if (!searchTerm) return true;
@@ -1900,6 +2689,12 @@ function UsersPanel({ users, refresh }: { users: User[]; refresh: () => void }) 
     const text = `${item.username} ${roleLabel} ${statusLabel} ${formatDateTime(item.created_at)}`.toLowerCase();
     return text.includes(searchTerm);
   });
+  const pagedUsers = paginateItems(visibleUsers, page, pageSize);
+
+  useEffect(() => {
+    setPage(1);
+  }, [searchTerm, pageSize, users.length]);
+
   return (
     <Panel
       title="用户管理"
@@ -1921,7 +2716,7 @@ function UsersPanel({ users, refresh }: { users: User[]; refresh: () => void }) 
           <span>创建时间</span>
           <span>操作</span>
         </div>
-        {visibleUsers.map((item) => (
+        {pagedUsers.items.map((item) => (
           <div className="admin-table-row user-table" key={item.id}>
             <strong>{item.username}</strong>
             <span>{item.role === 'admin' ? '管理员' : '普通用户'}</span>
@@ -1935,6 +2730,7 @@ function UsersPanel({ users, refresh }: { users: User[]; refresh: () => void }) 
         ))}
         {visibleUsers.length === 0 && <div className="empty-table">{users.length === 0 ? '还没有用户。' : '没有匹配的用户。'}</div>}
       </div>
+      <PaginationControls total={visibleUsers.length} page={pagedUsers.safePage} pageSize={pageSize} onPage={setPage} onPageSize={setPageSize} />
       {modal && <UserModal user={modal === 'new' ? null : modal} onClose={() => setModal(null)} onSaved={async () => { await refresh(); setModal(null); }} />}
     </Panel>
   );
@@ -1983,7 +2779,194 @@ function UsersPanel({ users, refresh }: { users: User[]; refresh: () => void }) 
   );
 }
 
-function AccountModal({ account, onClose, onSaved }: { account: Account | null; onClose: () => void; onSaved: () => void | Promise<void> }) {
+function NamePicker({
+  value,
+  options,
+  onChange,
+  onManage
+}: {
+  value: string;
+  options: string[];
+  onChange: (value: string) => void;
+  onManage?: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const filtered = options.filter((name) => !value.trim() || name.toLowerCase().includes(value.trim().toLowerCase()));
+
+  useEffect(() => {
+    if (!open) return;
+    function close(event: PointerEvent) {
+      if (!ref.current?.contains(event.target as Node)) setOpen(false);
+    }
+    document.addEventListener('pointerdown', close);
+    return () => document.removeEventListener('pointerdown', close);
+  }, [open]);
+
+  return (
+    <label className="name-picker-field">
+      <span>账号名称</span>
+      <div className="name-picker" ref={ref}>
+        <div className="name-picker-input">
+          <Sparkles size={16} />
+          <input
+            value={value}
+            onFocus={() => setOpen(true)}
+            onChange={(event) => {
+              onChange(event.target.value);
+              setOpen(true);
+            }}
+            placeholder="输入或选择已管理的名称"
+          />
+          {onManage && <button type="button" className="name-picker-manage" onClick={onManage}>管理</button>}
+        </div>
+        {open && (
+          <div className="name-picker-menu">
+            <div className="name-picker-menu-head">
+              <strong>快捷选择名称</strong>
+              {onManage && <button type="button" onClick={onManage}>管理名称</button>}
+            </div>
+            <div className="name-picker-options">
+              {filtered.map((name) => (
+                <button
+                  type="button"
+                  key={name}
+                  onClick={() => {
+                    onChange(name);
+                    setOpen(false);
+                  }}
+                >
+                  <Sparkles size={14} />
+                  <span>{name}</span>
+                </button>
+              ))}
+              {filtered.length === 0 && <p>没有匹配名称，可以直接输入后保存账号。</p>}
+            </div>
+          </div>
+        )}
+      </div>
+    </label>
+  );
+}
+
+function AccountNameManagerModal({
+  names,
+  onClose,
+  onChanged
+}: {
+  names: AccountName[];
+  onClose: () => void;
+  onChanged: () => void | Promise<void>;
+}) {
+  const [newName, setNewName] = useState('');
+  const [editingId, setEditingId] = useState('');
+  const [editingName, setEditingName] = useState('');
+  const [error, setError] = useState('');
+  const [loadingId, setLoadingId] = useState('');
+
+  async function createName(event: React.FormEvent) {
+    event.preventDefault();
+    setError('');
+    try {
+      await api('/api/account-names', { method: 'POST', body: JSON.stringify({ name: newName }) });
+      setNewName('');
+      await onChanged();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
+  async function saveName(id: string) {
+    setError('');
+    setLoadingId(id);
+    try {
+      await api(`/api/account-names/${id}`, { method: 'PUT', body: JSON.stringify({ name: editingName }) });
+      setEditingId('');
+      setEditingName('');
+      await onChanged();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setLoadingId('');
+    }
+  }
+
+  async function deleteName(item: AccountName) {
+    setError('');
+    setLoadingId(item.id);
+    try {
+      await api(`/api/account-names/${item.id}`, { method: 'DELETE' });
+      await onChanged();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setLoadingId('');
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <section className="admin-modal compact name-manager-modal" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-title">
+          <div>
+            <span>名称库</span>
+            <h2>管理名称</h2>
+          </div>
+          <button className="icon-btn" onClick={onClose}><X size={18} /></button>
+        </div>
+        <div className="name-manager-body">
+          <form className="name-manager-create" onSubmit={createName}>
+            <div className="searchbox">
+              <Sparkles size={16} />
+              <input value={newName} onChange={(event) => setNewName(event.target.value)} placeholder="新增一个常用名称" />
+            </div>
+            <button className="primary"><Plus size={16} />新增</button>
+          </form>
+          {error && <div className="form-error">{error}</div>}
+          <div className="name-manager-list">
+            {names.map((item) => (
+              <div className="name-manager-row" key={item.id}>
+                {editingId === item.id ? (
+                  <input value={editingName} onChange={(event) => setEditingName(event.target.value)} />
+                ) : (
+                  <strong>{item.name}</strong>
+                )}
+                <div className="row-actions">
+                  {editingId === item.id ? (
+                    <>
+                      <button type="button" className="soft-btn" disabled={loadingId === item.id} onClick={() => saveName(item.id)}>保存</button>
+                      <button type="button" className="ghost-action" onClick={() => { setEditingId(''); setEditingName(''); }}>取消</button>
+                    </>
+                  ) : (
+                    <>
+                      <button type="button" className="ghost-action" onClick={() => { setEditingId(item.id); setEditingName(item.name); }}>编辑</button>
+                      <button type="button" className="danger-btn" disabled={loadingId === item.id} onClick={() => deleteName(item)}><Trash2 size={15} />删除</button>
+                    </>
+                  )}
+                </div>
+              </div>
+            ))}
+            {names.length === 0 && <div className="empty-table">还没有名称，先新增一个常用名称吧。</div>}
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function AccountModal({
+  account,
+  nameOptions = [],
+  onManageNames,
+  onClose,
+  onSaved
+}: {
+  account: Account | null;
+  nameOptions?: string[];
+  onManageNames?: () => void;
+  onClose: () => void;
+  onSaved: () => void | Promise<void>;
+}) {
   const [form, setForm] = useState({
     name: account?.name || '',
     login: account?.login || '',
@@ -2015,7 +2998,12 @@ function AccountModal({ account, onClose, onSaved }: { account: Account | null; 
           <button className="icon-btn" onClick={onClose}><X size={18} /></button>
         </div>
         <form className="modal-form" onSubmit={submit}>
-          <Field label="账号名称" value={form.name} onChange={(name) => setForm({ ...form, name })} />
+          <NamePicker
+            value={form.name}
+            options={nameOptions}
+            onChange={(name) => setForm({ ...form, name })}
+            onManage={onManageNames}
+          />
           <div className="form-grid-2">
             <Field label="登录账号" value={form.login} onChange={(login) => setForm({ ...form, login })} />
             <Field label="密码" value={form.password} onChange={(password) => setForm({ ...form, password })} />
@@ -2122,6 +3110,8 @@ function RecordsPanel({
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
   const [clearLoading, setClearLoading] = useState(false);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
 
   useEffect(() => {
     if (user.role === 'admin') loadLogs();
@@ -2196,6 +3186,15 @@ function RecordsPanel({
     ...visibleBookings.map((booking) => ({ kind: 'booking' as const, key: `booking-${booking.id}`, time: booking.created_at, booking })),
     ...visibleLogs.map((log) => ({ kind: 'log' as const, key: `log-${log.id}`, time: log.created_at, log }))
   ].sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime());
+  const pagedRecordRows = paginateItems(recordRows, page, pageSize);
+
+  useEffect(() => {
+    setPage(1);
+  }, [accountFilter, userFilter, pageSize, recordRows.length]);
+
+  function ownerClass(booking: Booking) {
+    return booking.operator_id === user.id ? 'is-mine' : 'is-others';
+  }
 
   return (
     <div className="records-stack">
@@ -2232,7 +3231,7 @@ function RecordsPanel({
             <span>操作人</span>
             <span>操作</span>
           </div>
-          {recordRows.map((row) => {
+          {pagedRecordRows.items.map((row) => {
             if (row.kind === 'log') {
               return (
                 <div className="record-row" key={row.key}>
@@ -2248,7 +3247,7 @@ function RecordsPanel({
             }
             const booking = row.booking;
             return (
-              <div className="record-row" key={row.key}>
+              <div className={`record-row ${ownerClass(booking)}`} key={row.key}>
                 <span>出租</span>
                 <span>{booking.account_name}</span>
                 <strong>{booking.renter_name}{booking.renter_contact ? ` / ${booking.renter_contact}` : ''}</strong>
@@ -2264,6 +3263,49 @@ function RecordsPanel({
           })}
           {recordRows.length === 0 && <div className="empty-table">当前筛选条件下没有记录。</div>}
         </div>
+        <div className="mobile-record-cards">
+          {pagedRecordRows.items.map((row) => {
+            if (row.kind === 'log') {
+              return (
+                <article className="mobile-record-card" key={row.key}>
+                  <div className="mobile-record-card-head">
+                    <span>{'\u64cd\u4f5c'}</span>
+                    <span className="tag muted">{actionLabel(row.log.action)}</span>
+                  </div>
+                  <strong>{row.log.summary}</strong>
+                  <dl>
+                    <div><dt>{'\u5bf9\u8c61'}</dt><dd>{entityLabel(row.log.entity_type)}</dd></div>
+                    <div><dt>{'\u65f6\u95f4'}</dt><dd>{formatDateTime(row.log.created_at)}</dd></div>
+                    <div><dt>{'\u64cd\u4f5c\u4eba'}</dt><dd>{row.log.actor_name || '\u7cfb\u7edf'}</dd></div>
+                  </dl>
+                </article>
+              );
+            }
+            const booking = row.booking;
+            return (
+              <article className={`mobile-record-card ${ownerClass(booking)}`} key={row.key}>
+                <div className="mobile-record-card-head">
+                  <span>{booking.account_name}</span>
+                  <span className={`tag ${booking.status}`}>{statusText[booking.status]}</span>
+                </div>
+                <strong>{booking.renter_name}{booking.renter_contact ? ` / ${booking.renter_contact}` : ''}</strong>
+                <dl>
+                  <div><dt>{'\u5f00\u59cb'}</dt><dd>{formatDateTime(booking.starts_at)}</dd></div>
+                  <div><dt>{'\u7ed3\u675f'}</dt><dd>{formatDateTime(booking.ends_at)}</dd></div>
+                  <div><dt>{'\u64cd\u4f5c\u4eba'}</dt><dd>{booking.operator_name || '-'}</dd></div>
+                </dl>
+                {(user.role === 'admin' || booking.operator_id === user.id) && (
+                  <div className="row-actions mobile-record-actions">
+                    <button className="ghost-action" onClick={() => onEdit(booking)}>{'\u7f16\u8f91'}</button>
+                    <DeleteButton url={`/api/bookings/${booking.id}`} refresh={refreshRecords} />
+                  </div>
+                )}
+              </article>
+            );
+          })}
+          {recordRows.length === 0 && <div className="empty-table">{'\u5f53\u524d\u7b5b\u9009\u6761\u4ef6\u4e0b\u6ca1\u6709\u8bb0\u5f55\u3002'}</div>}
+        </div>
+        <PaginationControls total={recordRows.length} page={pagedRecordRows.safePage} pageSize={pageSize} onPage={setPage} onPageSize={setPageSize} />
         {clearConfirmOpen && (
           <ConfirmModal
             title="确认清空操作记录"
@@ -2280,9 +3322,16 @@ function RecordsPanel({
   );
 }
 
-function BackupPanel() {
+function BackupPanel({ settings }: { settings: AppSettings }) {
   const [file, setFile] = useState<File | null>(null);
   const [message, setMessage] = useState('');
+  const messageTone = message.includes('成功') ? 'success' : 'danger';
+
+  useEffect(() => {
+    if (!message) return;
+    const timer = window.setTimeout(() => setMessage(''), getToastDurationMs(settings));
+    return () => window.clearTimeout(timer);
+  }, [message, settings]);
 
   function exportBackup() {
     if (!localMockEnabled) {
@@ -2334,7 +3383,7 @@ function BackupPanel() {
           <button className="danger-btn" onClick={restore}>导入并替换</button>
         </article>
       </div>
-      {message && <div className="toast inline">{message}</div>}
+      <NoticeToast message={message} tone={messageTone} />
     </Panel>
   );
 }
@@ -2344,10 +3393,21 @@ function SettingsPanel({ user, settings, onSettings }: { user: User; settings: A
   const [version, setVersion] = useState<{ current: string; latest: string; hasUpdate: boolean; repo: string; branch: string } | null>(null);
   const [force, setForce] = useState(false);
   const [message, setMessage] = useState('');
+  const messageTone = message.includes('已保存') || message.includes('最新') || message.includes('成功') ? 'success' : 'danger';
+  const selectedCopyFields = (form.accountCopyFields || defaultSettings.accountCopyFields || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
 
   useEffect(() => {
     setForm(settings);
   }, [settings]);
+
+  useEffect(() => {
+    if (!message) return;
+    const timer = window.setTimeout(() => setMessage(''), getToastDurationMs(form));
+    return () => window.clearTimeout(timer);
+  }, [message, form]);
 
   async function saveSettings(event: React.FormEvent) {
     event.preventDefault();
@@ -2372,6 +3432,14 @@ function SettingsPanel({ user, settings, onSettings }: { user: User; settings: A
     } catch (err) {
       setMessage((err as Error).message);
     }
+  }
+
+  function toggleCopyField(key: string) {
+    const set = new Set(selectedCopyFields);
+    if (set.has(key)) set.delete(key);
+    else set.add(key);
+    const ordered = accountCopyFieldOptions.map((item) => item.key).filter((item) => set.has(item));
+    setForm({ ...form, accountCopyFields: ordered.join(',') });
   }
 
   async function runUpdate() {
@@ -2427,9 +3495,22 @@ function SettingsPanel({ user, settings, onSettings }: { user: User; settings: A
                     <option value="custom">自定义时间段</option>
                   </select>
                 </label>
+                <Field label="长名称滚动速度（秒）" type="number" value={form.nameScrollSeconds || defaultSettings.nameScrollSeconds || '8'} onChange={(nameScrollSeconds) => setForm({ ...form, nameScrollSeconds })} />
+                <Field label="提示弹窗显示时间（秒）" type="number" value={form.toastDurationSeconds || defaultSettings.toastDurationSeconds || '1'} onChange={(toastDurationSeconds) => setForm({ ...form, toastDurationSeconds })} />
                 {form.auditRetentionDays === 'custom' && (
                   <Field label="自定义保留天数" value={form.auditRetentionCustomDays || ''} onChange={(auditRetentionCustomDays) => setForm({ ...form, auditRetentionCustomDays })} />
                 )}
+              </div>
+              <div className="copy-fields">
+                <span>{'\u8d26\u53f7\u8be6\u60c5\u590d\u5236\u5185\u5bb9'}</span>
+                <div>
+                  {accountCopyFieldOptions.map((item) => (
+                    <label className="copy-field-option" key={item.key}>
+                      <input type="checkbox" checked={selectedCopyFields.includes(item.key)} onChange={() => toggleCopyField(item.key)} />
+                      <span>{item.label}</span>
+                    </label>
+                  ))}
+                </div>
               </div>
               <button className="primary">保存基本信息</button>
             </div>
@@ -2459,7 +3540,7 @@ function SettingsPanel({ user, settings, onSettings }: { user: User; settings: A
           </div>
         )}
 
-        {message && <div className="toast inline">{message}</div>}
+        <NoticeToast message={message} tone={messageTone} />
       </div>
     </Panel>
   );
@@ -2566,7 +3647,7 @@ function DeleteButton({ url, refresh, label = '删除', title = '确认删除', 
 function MobileTabs({ active, setActive, isAdmin }: { active: string; setActive: (id: string) => void; isAdmin: boolean }) {
   const items = navItems.filter((item) => ['timeline', 'accounts', 'records'].includes(item.id) || (isAdmin && ['backup', 'settings'].includes(item.id)));
   return (
-    <nav className="mobile-tabs">
+    <nav className="mobile-tabs" style={{ '--mobile-tab-count': items.slice(0, 5).length } as React.CSSProperties}>
       {items.slice(0, 5).map((item) => {
         const Icon = item.icon;
         return (
