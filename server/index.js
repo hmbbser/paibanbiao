@@ -161,6 +161,11 @@ app.get('/api/setup', (_req, res) => {
   res.json({ complete: isSetupComplete() });
 });
 
+app.get('/api/public-settings', (_req, res) => {
+  const settings = Object.fromEntries(allRows('settings').map((item) => [item.key, item.value]));
+  res.json({ siteName: settings.siteName || '甜排班' });
+});
+
 app.post('/api/setup', async (req, res) => {
   if (isSetupComplete()) return res.status(409).json({ error: '系统已初始化' });
   const { username, password, siteName } = req.body;

@@ -331,6 +331,7 @@ async function mockApi<T>(url: string, options: RequestInit = {}): Promise<T> {
   };
 
   if (url === '/api/setup' && method === 'GET') return ok({ complete: true });
+  if (url === '/api/public-settings') return ok({ siteName: state.settings.siteName || defaultSettings.siteName });
   if (url === '/api/setup' && method === 'POST') {
     const body = readBody<{ siteName?: string; username?: string }>(options);
     const admin = { ...state.users[0], username: body.username || 'admin' };
@@ -629,23 +630,35 @@ async function mockApi<T>(url: string, options: RequestInit = {}): Promise<T> {
 function App() {
   const [setupComplete, setSetupComplete] = useState<boolean | null>(null);
   const [user, setUser] = useState<User | null>(null);
-  const [settings, setSettings] = useState<AppSettings>(defaultSettings);
+  const [settings, setSettingsState] = useState<AppSettings>(() => ({ ...defaultSettings, siteName: getCachedSiteName() }));
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     bootstrap();
   }, []);
 
+  function applySettings(nextSettings: AppSettings) {
+    const merged = { ...defaultSettings, ...nextSettings };
+    setSettingsState(merged);
+    document.title = merged.siteName || defaultSettings.siteName;
+    if (typeof window !== 'undefined') localStorage.setItem('schedule-site-name', merged.siteName || defaultSettings.siteName);
+    return merged;
+  }
+
   async function bootstrap() {
     try {
+      try {
+        const publicSettings = await api<{ siteName?: string }>('/api/public-settings');
+        if (publicSettings.siteName) applySettings({ ...settings, siteName: publicSettings.siteName });
+      } catch {
+        document.title = settings.siteName || defaultSettings.siteName;
+      }
       const setup = await api<{ complete: boolean }>('/api/setup');
       setSetupComplete(setup.complete);
       if (setup.complete) {
         const me = await api<{ user: User; settings: AppSettings }>('/api/auth/me');
         setUser(me.user);
-        const nextSettings = { ...defaultSettings, ...me.settings };
-        setSettings(nextSettings);
-        document.title = nextSettings.siteName;
+        applySettings(me.settings);
       }
     } catch {
       setUser(null);
@@ -654,18 +667,23 @@ function App() {
     }
   }
 
-  if (loading || setupComplete === null) return <Splash />;
-  if (!setupComplete) return <SetupWizard onDone={(next, nextSettings) => { setSetupComplete(true); setUser(next); setSettings(nextSettings); }} />;
-  if (!user) return <Login onDone={(next, nextSettings) => { setUser(next); setSettings(nextSettings); }} />;
-  return <Dashboard user={user} settings={settings} onUser={setUser} onSettings={setSettings} onLogout={() => setUser(null)} />;
+  if (loading || setupComplete === null) return <Splash siteName={settings.siteName} />;
+  if (!setupComplete) return <SetupWizard onDone={(next, nextSettings) => { setSetupComplete(true); setUser(next); applySettings(nextSettings); }} />;
+  if (!user) return <Login onDone={(next, nextSettings) => { setUser(next); applySettings(nextSettings); }} />;
+  return <Dashboard user={user} settings={settings} onUser={setUser} onSettings={applySettings} onLogout={() => setUser(null)} />;
 }
 
-function Splash() {
+function getCachedSiteName() {
+  if (typeof window === 'undefined') return defaultSettings.siteName;
+  return localStorage.getItem('schedule-site-name') || defaultSettings.siteName;
+}
+
+function Splash({ siteName }: { siteName: string }) {
   return (
     <main className="auth-shell">
       <div className="brand-card">
         <Sparkles />
-        <h1>甜排班</h1>
+        <h1>{siteName || defaultSettings.siteName}</h1>
         <p>正在整理今天的可爱时间线...</p>
       </div>
     </main>
