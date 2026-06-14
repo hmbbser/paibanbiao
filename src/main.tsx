@@ -11,6 +11,7 @@ import {
   DatabaseBackup,
   Download,
   FileClock,
+  GripVertical,
   KeyRound,
   LogOut,
   Mail,
@@ -31,10 +32,11 @@ import './styles.css';
 type Role = 'admin' | 'user';
 type User = { id: string; username: string; role: Role; enabled: boolean; created_at: string; can_switch?: boolean };
 type AppSettings = { siteName: string; timezone: string; defaultView: string; exportVersion?: string; auditRetentionDays?: string; auditRetentionCustomDays?: string; accountCopyFields?: string; nameScrollSeconds?: string; toastDurationSeconds?: string };
-type Account = { id: string; name: string; login: string; password: string; remark: string; status: string; created_at: string };
+type Account = { id: string; name: string; login: string; password: string; remark: string; status: string; sort_order?: number; created_at: string };
 type AccountName = { id: string; name: string; created_at: string };
 type Mailbox = { id: string; email: string; password: string; client_id: string; refresh_token: string; created_at: string; updated_at: string };
 type MailCodeResult = { code: string; email: string; recipient?: string; mailbox?: string; subject?: string; sender?: string; receivedAt?: string };
+type PasswordResetLinkResult = { link: string; email: string; recipient?: string; mailbox?: string; subject?: string; sender?: string; receivedAt?: string };
 type BookingStatus = 'reserved' | 'active' | 'completed' | 'ended_early' | 'cancelled';
 type Booking = {
   id: string;
@@ -177,7 +179,7 @@ function createMockState(): MockState {
     }
   ];
   return {
-    settings: { ...defaultSettings, siteName: '账号出租管理系统', exportVersion: '0.2.5', auditRetentionDays: '7' },
+    settings: { ...defaultSettings, siteName: '账号出租管理系统', exportVersion: '0.2.6', auditRetentionDays: '7' },
     users: [admin, staff],
     accounts,
     mailboxes,
@@ -221,7 +223,19 @@ function uniqueNames(names: string[]) {
   return Array.from(new Set(names.map((name) => name.trim()).filter(Boolean)));
 }
 
+function sortAccountsByOrder(accounts: Account[]) {
+  return [...accounts].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+}
+
 function normalizeMockState(state: MockState) {
+  if (Array.isArray(state.accounts)) {
+    const missingSortOrder = state.accounts.some((account) => !Number.isFinite(Number(account.sort_order)));
+    state.accounts = sortAccountsByOrder(state.accounts.map((account, index) => ({
+      ...account,
+      sort_order: Number.isFinite(Number(account.sort_order)) ? Number(account.sort_order) : (index + 1) * 10
+    })));
+    if (missingSortOrder) saveMockState(state);
+  }
   if (!Array.isArray(state.mailboxes)) {
     state.mailboxes = [];
     saveMockState(state);
@@ -443,7 +457,7 @@ async function mockApi<T>(url: string, options: RequestInit = {}): Promise<T> {
     saveMockState(state);
     return ok({ settings: state.settings });
   }
-  if (url === '/api/admin/version') return ok({ current: '0.2.5-local', latest: '0.2.5-local', hasUpdate: false, repo: 'hmbbser/paibanbiao', branch: 'main' });
+  if (url === '/api/admin/version') return ok({ current: '0.2.6-local', latest: '0.2.6-local', hasUpdate: false, repo: 'hmbbser/paibanbiao', branch: 'main' });
   if (url === '/api/admin/update' && method === 'POST') return ok({ message: '本地 UI 模式不执行真实更新' });
   if (url === '/api/admin/import' && method === 'POST') {
     if (options.body instanceof FormData) {
@@ -537,6 +551,22 @@ async function mockApi<T>(url: string, options: RequestInit = {}): Promise<T> {
     });
   }
 
+  const passwordResetMatch = url.match(/^\/api\/accounts\/([^/]+)\/password-reset-link$/);
+  if (passwordResetMatch && method === 'POST') {
+    const account = state.accounts.find((item) => item.id === passwordResetMatch[1]);
+    const email = extractEmailFromText(account?.remark || '');
+    if (!account || !email || !state.mailboxes.some((mailbox) => mailbox.email === email)) return fail('\u672a\u627e\u5230\u90ae\u7bb1\uff0c\u8bf7\u8054\u7cfb\u7ba1\u7406\u5458');
+    return ok({
+      link: 'https://help.steampowered.com/ja/wizard/VerifyCode?i=406&s=710806048765760421&m=2&c=5H64C',
+      email,
+      recipient: email,
+      mailbox: 'INBOX',
+      subject: 'Steam\u30a2\u30ab\u30a6\u30f3\u30c8\u5fa9\u65e7',
+      sender: 'noreply@steampowered.com',
+      receivedAt: new Date().toISOString()
+    });
+  }
+
   const mailboxMatch = url.match(/^\/api\/mailboxes\/(.+)$/);
   if (mailboxMatch && method === 'PUT') {
     const body = readBody<Partial<Mailbox>>(options);
@@ -566,6 +596,7 @@ async function mockApi<T>(url: string, options: RequestInit = {}): Promise<T> {
   const accountMatch = url.match(/^\/api\/accounts\/(.+)$/);
   if (url === '/api/accounts' && method === 'POST') {
     const body = readBody<Partial<Account>>(options);
+    const maxOrder = Math.max(0, ...state.accounts.map((account) => Number(account.sort_order) || 0));
     const account: Account = {
       id: crypto.randomUUID(),
       name: body.name || '新账号',
@@ -573,12 +604,27 @@ async function mockApi<T>(url: string, options: RequestInit = {}): Promise<T> {
       password: body.password || '',
       remark: body.remark || '',
       status: body.status || 'active',
+      sort_order: maxOrder + 10,
       created_at: new Date().toISOString()
     };
     state.accounts.push(account);
     addMockAudit(state, sessionUser, 'create', 'account', `新增账号 ${account.name}`);
     saveMockState(state);
     return ok(account);
+  }
+  if (url === '/api/accounts/order' && method === 'POST') {
+    const body = readBody<{ ids?: string[] }>(options);
+    const ids = Array.isArray(body.ids) ? body.ids.map(String) : [];
+    const currentIds = state.accounts.map((account) => account.id);
+    const currentSet = new Set(currentIds);
+    if (!ids.length || ids.length !== currentIds.length || new Set(ids).size !== currentIds.length || ids.some((id) => !currentSet.has(id))) {
+      return fail('\u8d26\u53f7\u6392\u5e8f\u6570\u636e\u4e0d\u6b63\u786e');
+    }
+    const orderMap = new Map(ids.map((id, index) => [id, (index + 1) * 10]));
+    state.accounts = sortAccountsByOrder(state.accounts.map((account) => ({ ...account, sort_order: orderMap.get(account.id) || account.sort_order })));
+    addMockAudit(state, sessionUser, 'update', 'account', '\u8c03\u6574\u8d26\u53f7\u6392\u5e8f');
+    saveMockState(state);
+    return ok(state.accounts);
   }
   const accountNameMatch = url.match(/^\/api\/account-names\/(.+)$/);
   if (url === '/api/account-names' && method === 'GET') return ok(state.accountNames);
@@ -1941,6 +1987,8 @@ function BookingDetailModal({
   const [toastTone, setToastTone] = useState<'success' | 'danger' | 'info'>('success');
   const [mailCode, setMailCode] = useState<MailCodeResult | null>(null);
   const [mailCodeLoading, setMailCodeLoading] = useState(false);
+  const [passwordResetLink, setPasswordResetLink] = useState<PasswordResetLinkResult | null>(null);
+  const [passwordResetLoading, setPasswordResetLoading] = useState(false);
   const copyToastTimer = useRef<number | null>(null);
 
   useEffect(() => () => {
@@ -1989,6 +2037,20 @@ function BookingDetailModal({
     }
   }
 
+  async function fetchPasswordResetLink() {
+    setPasswordResetLoading(true);
+    try {
+      const result = await api<PasswordResetLinkResult>(`/api/accounts/${booking.account_id}/password-reset-link`, { method: 'POST' });
+      setPasswordResetLink(result);
+      await copyTextToClipboard(result.link);
+      showCopyToast('\u91cd\u7f6e\u94fe\u63a5\u5df2\u590d\u5236');
+    } catch (error) {
+      showCopyToast((error as Error).message, 'danger');
+    } finally {
+      setPasswordResetLoading(false);
+    }
+  }
+
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <section className="admin-modal compact detail-modal" onClick={(event) => event.stopPropagation()}>
@@ -2011,6 +2073,7 @@ function BookingDetailModal({
         </div>
         <div className="modal-actions detail-actions account-detail-actions">
           <button className={`soft-btn login-code-action ${mailCode ? 'has-code' : ''}`} onClick={fetchLoginCode} disabled={mailCodeLoading}><Mail size={16} />{mailCodeLoading ? '获取中...' : (mailCode?.code || '获取登陆验证码')}</button>
+          <button className={`soft-btn reset-link-action ${passwordResetLink ? 'has-link' : ''}`} onClick={fetchPasswordResetLink} disabled={passwordResetLoading}><KeyRound size={16} />{passwordResetLoading ? '\u83b7\u53d6\u4e2d...' : (passwordResetLink ? '\u94fe\u63a5\u5df2\u590d\u5236' : '\u91cd\u7f6e\u5bc6\u7801')}</button>
           <button className="soft-btn" onClick={copyBooking}><Copy size={16} />复制</button>
           {canEdit && <button className="primary" onClick={onEdit}>编辑出租</button>}
           {canEdit && <button className="danger-btn" onClick={() => setDeleteOpen(true)}><Trash2 size={16} />删除</button>}
@@ -2165,6 +2228,8 @@ function AccountDetailModal({
   const [toastTone, setToastTone] = useState<'success' | 'danger' | 'info'>('success');
   const [mailCode, setMailCode] = useState<MailCodeResult | null>(null);
   const [mailCodeLoading, setMailCodeLoading] = useState(false);
+  const [passwordResetLink, setPasswordResetLink] = useState<PasswordResetLinkResult | null>(null);
+  const [passwordResetLoading, setPasswordResetLoading] = useState(false);
   const copyToastTimer = useRef<number | null>(null);
 
   useEffect(() => () => {
@@ -2211,6 +2276,20 @@ function AccountDetailModal({
       showCopyToast((error as Error).message, 'danger');
     } finally {
       setMailCodeLoading(false);
+    }
+  }
+
+  async function fetchPasswordResetLink() {
+    setPasswordResetLoading(true);
+    try {
+      const result = await api<PasswordResetLinkResult>(`/api/accounts/${account.id}/password-reset-link`, { method: 'POST' });
+      setPasswordResetLink(result);
+      await copyTextToClipboard(result.link);
+      showCopyToast('\u91cd\u7f6e\u94fe\u63a5\u5df2\u590d\u5236');
+    } catch (error) {
+      showCopyToast((error as Error).message, 'danger');
+    } finally {
+      setPasswordResetLoading(false);
     }
   }
 
@@ -2265,6 +2344,7 @@ function AccountDetailModal({
         </div>
         <div className="modal-actions detail-actions account-detail-actions">
           <button className={`soft-btn login-code-action ${mailCode ? 'has-code' : ''}`} onClick={fetchLoginCode} disabled={mailCodeLoading}><Mail size={16} />{mailCodeLoading ? '获取中...' : (mailCode?.code || '获取登陆验证码')}</button>
+          <button className={`soft-btn reset-link-action ${passwordResetLink ? 'has-link' : ''}`} onClick={fetchPasswordResetLink} disabled={passwordResetLoading}><KeyRound size={16} />{passwordResetLoading ? '\u83b7\u53d6\u4e2d...' : (passwordResetLink ? '\u94fe\u63a5\u5df2\u590d\u5236' : '\u91cd\u7f6e\u5bc6\u7801')}</button>
           <button className="soft-btn" onClick={copyAccount}><Copy size={16} />复制</button>
           {onEdit && <button className="primary" onClick={onEdit}>{'\u7f16\u8f91\u8d26\u53f7'}</button>}
           {onDeleted && <button className="danger-btn" onClick={() => setDeleteOpen(true)}><Trash2 size={16} />{'\u5220\u9664'}</button>}
@@ -2812,6 +2892,12 @@ function AccountsPanel({ user, settings, accounts, refresh }: { user: User; sett
   const [toggleLoadingId, setToggleLoadingId] = useState('');
   const [mailCodeLoadingId, setMailCodeLoadingId] = useState('');
   const [mailCodes, setMailCodes] = useState<Record<string, MailCodeResult>>({});
+  const [passwordResetLoadingId, setPasswordResetLoadingId] = useState('');
+  const [passwordResetLinks, setPasswordResetLinks] = useState<Record<string, PasswordResetLinkResult>>({});
+  const [draggingAccountId, setDraggingAccountId] = useState('');
+  const [dragOverAccountId, setDragOverAccountId] = useState('');
+  const [accountOrderSaving, setAccountOrderSaving] = useState(false);
+  const accountPointerDrag = useRef({ active: false, pointerId: -1, sourceId: '', targetId: '' });
   const [copyToast, setCopyToast] = useState('');
   const [toastTone, setToastTone] = useState<'success' | 'danger' | 'info'>('success');
   const copyToastTimer = useRef<number | null>(null);
@@ -2956,6 +3042,102 @@ function AccountsPanel({ user, settings, accounts, refresh }: { user: User; sett
     }
   }
 
+  async function fetchPasswordResetLink(account: Account) {
+    setPasswordResetLoadingId(account.id);
+    try {
+      const result = await api<PasswordResetLinkResult>(`/api/accounts/${account.id}/password-reset-link`, { method: 'POST' });
+      setPasswordResetLinks((current) => ({ ...current, [account.id]: result }));
+      await copyTextToClipboard(result.link);
+      showCopyToast('\u91cd\u7f6e\u94fe\u63a5\u5df2\u590d\u5236');
+    } catch (error) {
+      showCopyToast((error as Error).message, 'danger');
+    } finally {
+      setPasswordResetLoadingId('');
+    }
+  }
+
+  function moveAccountOrder(sourceId: string, targetId: string) {
+    if (!sourceId || !targetId || sourceId === targetId || user.role !== 'admin') return;
+    const sourceIndex = visibleAccounts.findIndex((account) => account.id === sourceId);
+    const targetIndex = visibleAccounts.findIndex((account) => account.id === targetId);
+    if (sourceIndex < 0 || targetIndex < 0) return;
+    const reorderedVisible = [...visibleAccounts];
+    const [source] = reorderedVisible.splice(sourceIndex, 1);
+    reorderedVisible.splice(targetIndex, 0, source);
+    const visibleIdSet = new Set(visibleAccounts.map((account) => account.id));
+    const visibleQueue = [...reorderedVisible];
+    const nextIds = accounts.map((account) => visibleIdSet.has(account.id) ? visibleQueue.shift()!.id : account.id);
+    saveAccountOrder(nextIds);
+  }
+
+  async function saveAccountOrder(ids: string[]) {
+    setAccountOrderSaving(true);
+    try {
+      await api<Account[]>('/api/accounts/order', { method: 'POST', body: JSON.stringify({ ids }) });
+      await refresh();
+      showCopyToast('\u8d26\u53f7\u6392\u5e8f\u5df2\u4fdd\u5b58');
+    } catch (error) {
+      showCopyToast((error as Error).message, 'danger');
+    } finally {
+      setAccountOrderSaving(false);
+      setDraggingAccountId('');
+      setDragOverAccountId('');
+    }
+  }
+
+  function startAccountDrag(event: React.DragEvent, accountId: string) {
+    setDraggingAccountId(accountId);
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', accountId);
+  }
+
+  function startAccountPointerDrag(event: React.PointerEvent<HTMLButtonElement>, accountId: string) {
+    if (accountOrderSaving || user.role !== 'admin') return;
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    event.preventDefault();
+    accountPointerDrag.current = { active: true, pointerId: event.pointerId, sourceId: accountId, targetId: accountId };
+    setDraggingAccountId(accountId);
+    setDragOverAccountId('');
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  }
+
+  function moveAccountPointerDrag(event: React.PointerEvent<HTMLButtonElement>) {
+    const drag = accountPointerDrag.current;
+    if (!drag.active || drag.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    const element = document.elementFromPoint(event.clientX, event.clientY);
+    const target = element?.closest<HTMLElement>('[data-account-drop-id]');
+    const targetId = target?.dataset.accountDropId || '';
+    if (targetId && targetId !== drag.sourceId) {
+      drag.targetId = targetId;
+      setDragOverAccountId(targetId);
+    }
+  }
+
+  function endAccountPointerDrag(event: React.PointerEvent<HTMLButtonElement>) {
+    const drag = accountPointerDrag.current;
+    if (!drag.active || drag.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+    accountPointerDrag.current = { active: false, pointerId: -1, sourceId: '', targetId: '' };
+    if (drag.targetId && drag.targetId !== drag.sourceId) {
+      moveAccountOrder(drag.sourceId, drag.targetId);
+      return;
+    }
+    setDraggingAccountId('');
+    setDragOverAccountId('');
+  }
+
+  function enterAccountDrop(accountId: string) {
+    if (draggingAccountId && draggingAccountId !== accountId) setDragOverAccountId(accountId);
+  }
+
+  function dropAccount(event: React.DragEvent, accountId: string) {
+    event.preventDefault();
+    const sourceId = draggingAccountId || event.dataTransfer.getData('text/plain');
+    moveAccountOrder(sourceId, accountId);
+  }
+
   const CopyValue = ({ account, value, className = '' }: { account: Account; value: string; className?: string }) => (
     <button type="button" className={`copy-value ${className}`} onClick={() => copyAccountField(account, value)} title="点击复制">
       {className.includes('copy-value-name') ? <MarqueeText text={value} settings={settings} /> : value}
@@ -2994,6 +3176,7 @@ function AccountsPanel({ user, settings, accounts, refresh }: { user: User; sett
       </div>
       <div className={`admin-table ${user.role === 'admin' ? 'admin-account-table' : 'user-account-table'}`}>
         <div className={`admin-table-head ${accountTableClass}`}>
+          {user.role === 'admin' && <span className="drag-head" aria-hidden="true" />}
           {user.role === 'admin' && (
             <label className="table-check">
               <input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} aria-label="选择当前列表账号" />
@@ -3008,7 +3191,33 @@ function AccountsPanel({ user, settings, accounts, refresh }: { user: User; sett
           <span>操作</span>
         </div>
         {pagedAccounts.items.map((account) => (
-          <div className={`admin-table-row ${accountTableClass} ${account.status !== 'active' ? 'account-disabled-row' : ''}`} key={account.id}>
+          <div
+            className={`admin-table-row ${accountTableClass} ${account.status !== 'active' ? 'account-disabled-row' : ''} ${draggingAccountId === account.id ? 'is-reordering' : ''} ${dragOverAccountId === account.id ? 'is-drag-over' : ''}`}
+            key={account.id}
+            data-account-drop-id={account.id}
+            onDragOver={(event) => {
+              if (!draggingAccountId || draggingAccountId === account.id) return;
+              event.preventDefault();
+              enterAccountDrop(account.id);
+            }}
+            onDrop={(event) => dropAccount(event, account.id)}
+          >
+            {user.role === 'admin' && (
+              <button
+                type="button"
+                className="account-drag-handle"
+                draggable={false}
+                onPointerDown={(event) => startAccountPointerDrag(event, account.id)}
+                onPointerMove={moveAccountPointerDrag}
+                onPointerUp={endAccountPointerDrag}
+                onPointerCancel={endAccountPointerDrag}
+                title={'\u62d6\u52a8\u6392\u5e8f'}
+                aria-label={`\u62d6\u52a8\u8c03\u6574 ${account.name} \u6392\u5e8f`}
+                disabled={accountOrderSaving}
+              >
+                <GripVertical size={16} />
+              </button>
+            )}
             {user.role === 'admin' && (
               <label className="table-check">
                 <input type="checkbox" checked={selectedIds.has(account.id)} onChange={() => toggleSelected(account.id)} aria-label={`选择${account.name}`} />
@@ -3045,6 +3254,16 @@ function AccountsPanel({ user, settings, accounts, refresh }: { user: User; sett
                 <Mail size={14} />
                 {mailCodeLoadingId === account.id ? '获取中...' : (mailCodes[account.id]?.code || '登陆验证码')}
               </button>
+              <button
+                type="button"
+                className={`ghost-action reset-link-action ${passwordResetLinks[account.id] ? 'has-link' : ''}`}
+                onClick={() => fetchPasswordResetLink(account)}
+                disabled={passwordResetLoadingId === account.id}
+                title={'\u91cd\u7f6e\u5bc6\u7801'}
+              >
+                <KeyRound size={14} />
+                {passwordResetLoadingId === account.id ? '\u83b7\u53d6\u4e2d...' : (passwordResetLinks[account.id] ? '\u94fe\u63a5\u5df2\u590d\u5236' : '\u91cd\u7f6e\u5bc6\u7801')}
+              </button>
               <button className="ghost-action copy-action" onClick={() => copyAccount(account)}><Copy size={14} />复制</button>
               {user.role === 'admin' && (
                 <>
@@ -3069,16 +3288,42 @@ function AccountsPanel({ user, settings, accounts, refresh }: { user: User; sett
         {visibleAccounts.length === 0 && <div className="empty-table">{accounts.length === 0 ? '还没有账号，点击右上角“添加账号”开始。' : '没有匹配的账号。'}</div>}
       </div>      <div className="mobile-account-cards">
         {visibleAccounts.map((account) => (
-          <article className={`mobile-account-card ${account.status !== 'active' ? 'account-disabled-card' : ''}`} key={account.id}>
+          <article
+            className={`mobile-account-card ${account.status !== 'active' ? 'account-disabled-card' : ''} ${draggingAccountId === account.id ? 'is-reordering' : ''} ${dragOverAccountId === account.id ? 'is-drag-over' : ''}`}
+            key={account.id}
+            data-account-drop-id={account.id}
+            onDragOver={(event) => {
+              if (!draggingAccountId || draggingAccountId === account.id) return;
+              event.preventDefault();
+              enterAccountDrop(account.id);
+            }}
+            onDrop={(event) => dropAccount(event, account.id)}
+          >
             <div className="mobile-account-card-head">
               <div>
                 <CopyValue account={account} value={account.name} className="copy-value-name mobile-title-copy" />
                 <span>{account.status === 'active' ? '\u6b63\u5e38' : '\u505c\u7528'}</span>
               </div>
               {user.role === 'admin' ? (
-                <label className="table-check">
-                  <input type="checkbox" checked={selectedIds.has(account.id)} onChange={() => toggleSelected(account.id)} aria-label={`\u9009\u62e9${account.name}`} />
-                </label>
+                <div className="mobile-card-tools">
+                  <button
+                    type="button"
+                    className="account-drag-handle"
+                    draggable={false}
+                    onPointerDown={(event) => startAccountPointerDrag(event, account.id)}
+                    onPointerMove={moveAccountPointerDrag}
+                    onPointerUp={endAccountPointerDrag}
+                    onPointerCancel={endAccountPointerDrag}
+                    title={'\u62d6\u52a8\u6392\u5e8f'}
+                    aria-label={`\u62d6\u52a8\u8c03\u6574 ${account.name} \u6392\u5e8f`}
+                    disabled={accountOrderSaving}
+                  >
+                    <GripVertical size={16} />
+                  </button>
+                  <label className="table-check">
+                    <input type="checkbox" checked={selectedIds.has(account.id)} onChange={() => toggleSelected(account.id)} aria-label={`\u9009\u62e9${account.name}`} />
+                  </label>
+                </div>
               ) : (
                 <span className={`status-pill ${account.status === 'active' ? 'ok' : 'muted'}`}>{account.status === 'active' ? '\u6b63\u5e38' : '\u505c\u7528'}</span>
               )}
@@ -3117,6 +3362,16 @@ function AccountsPanel({ user, settings, accounts, refresh }: { user: User; sett
                 >
                   <Mail size={14} />
                   {mailCodeLoadingId === account.id ? '获取中...' : (mailCodes[account.id]?.code || '登陆验证码')}
+                </button>
+                <button
+                  type="button"
+                  className={`ghost-action reset-link-action ${passwordResetLinks[account.id] ? 'has-link' : ''}`}
+                  onClick={() => fetchPasswordResetLink(account)}
+                  disabled={passwordResetLoadingId === account.id}
+                  title={'\u91cd\u7f6e\u5bc6\u7801'}
+                >
+                  <KeyRound size={14} />
+                  {passwordResetLoadingId === account.id ? '\u83b7\u53d6\u4e2d...' : (passwordResetLinks[account.id] ? '\u94fe\u63a5\u5df2\u590d\u5236' : '\u91cd\u7f6e\u5bc6\u7801')}
                 </button>
                 <button className="ghost-action copy-action" onClick={() => copyAccount(account)}><Copy size={14} />{'\u590d\u5236'}</button>
                 {user.role === 'admin' && (

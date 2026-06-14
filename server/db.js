@@ -34,6 +34,7 @@ export function migrate() {
       password TEXT NOT NULL,
       remark TEXT DEFAULT '',
       status TEXT NOT NULL DEFAULT 'active',
+      sort_order INTEGER,
       created_at TEXT NOT NULL
     );
 
@@ -77,6 +78,12 @@ export function migrate() {
       created_at TEXT NOT NULL
     );
   `);
+
+  const accountColumns = db.prepare('PRAGMA table_info(accounts)').all().map((column) => column.name);
+  if (!accountColumns.includes('sort_order')) {
+    db.exec('ALTER TABLE accounts ADD COLUMN sort_order INTEGER;');
+  }
+  ensureAccountSortOrder();
 
   const defaults = [
     ['siteName', '甜排班'],
@@ -127,6 +134,7 @@ export function replaceAllData(payload) {
     db.exec('PRAGMA foreign_keys = ON;');
   });
   transaction();
+  ensureAccountSortOrder();
 }
 
 function insertRows(table, rows = []) {
@@ -137,4 +145,12 @@ function insertRows(table, rows = []) {
   for (const row of rows) {
     stmt.run(keys.map((key) => row[key]));
   }
+}
+
+function ensureAccountSortOrder() {
+  const rows = db.prepare('SELECT id FROM accounts WHERE sort_order IS NULL ORDER BY created_at ASC').all();
+  if (!rows.length) return;
+  const current = db.prepare('SELECT COALESCE(MAX(sort_order), 0) as value FROM accounts WHERE sort_order IS NOT NULL').get();
+  const update = db.prepare('UPDATE accounts SET sort_order = ? WHERE id = ?');
+  rows.forEach((row, index) => update.run(Number(current.value || 0) + (index + 1) * 10, row.id));
 }

@@ -24,6 +24,7 @@ const appVersion = packageJson.version || '0.0.0';
 const githubRepo = process.env.GITHUB_REPO || 'hmbbser/paibanbiao';
 const githubBranch = process.env.GITHUB_BRANCH || 'main';
 const appDir = process.env.APP_DIR || '/opt/cute-schedule';
+const accountOrderSql = 'ORDER BY sort_order ASC, created_at ASC';
 
 function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
@@ -356,6 +357,62 @@ function extractMessageCode(message) {
   return extractVerificationCode(message.subject, message.text, message.html);
 }
 
+function decodeHtmlEntities(value) {
+  return String(value || '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCharCode(parseInt(code, 16)))
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)));
+}
+
+function cleanUrlCandidate(value) {
+  return decodeHtmlEntities(value)
+    .trim()
+    .replace(/[)\].,;\uFF0C\u3002]+$/g, '');
+}
+
+const steamRecoveryPatterns = [
+  /account\s*(?:recovery|recover|reset)|recover.{0,30}(?:account|password|credentials)|reset.{0,30}(?:password|credentials)/i,
+  /Steam.{0,30}(?:recovery|recover|reset|password|credentials)/i,
+  /\u30a2\u30ab\u30a6\u30f3\u30c8.{0,24}(?:\u5fa9\u65e7|\u56de\u5fa9)|(?:\u5fa9\u65e7|\u56de\u5fa9).{0,24}(?:\u30a2\u30ab\u30a6\u30f3\u30c8|\u30ed\u30b0\u30a4\u30f3\u8cc7\u683c\u60c5\u5831)/,
+  /(?:\u627e\u56de|\u6062\u590d|\u6062\u5fa9|\u91cd\u7f6e|\u91cd\u8a2d).{0,24}(?:\u8d26\u53f7|\u5e10\u53f7|\u8cec\u865f|\u5e33\u865f|\u5bc6\u7801|\u5bc6\u78bc)/,
+  /(?:\uacc4\uc815|\ube44\ubc00\ubc88\ud638).{0,24}(?:\ubcf5\uad6c|\uc7ac\uc124\uc815)|(?:\ubcf5\uad6c|\uc7ac\uc124\uc815).{0,24}(?:\uacc4\uc815|\ube44\ubc00\ubc88\ud638)/,
+  /(?:recuperar|recuperaci[o\u00f3]n|restablecer|redefinir|senha|contrase[n\u00f1]a|mot de passe|r[e\u00e9]cup[e\u00e9]ration|zur[u\u00fc]cksetzen|wiederherstellung)/i
+];
+
+function steamRecoveryLinkFromCandidate(candidate) {
+  const cleaned = cleanUrlCandidate(candidate);
+  try {
+    const url = new URL(cleaned);
+    if (url.hostname.toLowerCase() !== 'help.steampowered.com') return '';
+    if (!url.pathname.includes('/wizard/VerifyCode')) return '';
+    if (!url.searchParams.has('c')) return '';
+    return url.toString();
+  } catch {
+    return '';
+  }
+}
+
+function extractSteamRecoveryLink(message) {
+  if (!senderHasEmail(message.sender, 'noreply@steampowered.com')) return '';
+  const raw = decodeHtmlEntities([message.subject, message.text, message.html].filter(Boolean).join('\n'));
+  const text = messageText(message.subject, message.text, message.html);
+  const compact = `${stripHtml(raw)} ${text}`.replace(/\s+/g, ' ');
+  const hasRecoverySignal = hasAnyPattern(compact, steamRecoveryPatterns) || /AccountRecoveryCode|wizard\/VerifyCode/i.test(raw);
+  if (!hasRecoverySignal || !/Steam/i.test(compact)) return '';
+
+  const candidates = raw.match(/https?:\/\/[^\s"'<>]+/gi) || [];
+  for (const candidate of candidates) {
+    const link = steamRecoveryLinkFromCandidate(candidate);
+    if (link) return link;
+  }
+  return '';
+}
+
 function graphAddresses(recipients = []) {
   return recipients.map((item) => normalizeEmail(item?.emailAddress?.address)).filter(Boolean);
 }
@@ -538,6 +595,25 @@ function scanMessagesForCode(messages, expectedEmail) {
   return null;
 }
 
+function scanMessagesForRecoveryLink(messages, expectedEmail) {
+  const ordered = [...messages].sort((a, b) => new Date(b.receivedAt || 0).getTime() - new Date(a.receivedAt || 0).getTime());
+  for (const message of ordered) {
+    if (!recipientMatches(message, expectedEmail)) continue;
+    const link = extractSteamRecoveryLink(message);
+    if (!link) continue;
+    return {
+      link,
+      email: normalizeEmail(expectedEmail),
+      recipient: normalizeEmail(expectedEmail),
+      mailbox: message.mailbox,
+      subject: message.subject || '',
+      sender: message.sender || '',
+      receivedAt: message.receivedAt || ''
+    };
+  }
+  return null;
+}
+
 async function findMailboxCode(mailbox, expectedEmail) {
   const errors = [];
   let graphCompleted = false;
@@ -565,6 +641,42 @@ async function findMailboxCode(mailbox, expectedEmail) {
     }
   }
   const found = scanMessagesForCode(imapMessages, expectedEmail);
+  if (found) return found;
+
+  if (errors.length && errors.every((error) => error.status === 502 || error.code === 'GRAPH_PERMISSION_MISSING')) {
+    const authError = errors.find((error) => error.status === 502);
+    if (authError && errors.length > 1) throw authError;
+  }
+  return null;
+}
+
+async function findMailboxRecoveryLink(mailbox, expectedEmail) {
+  const errors = [];
+  let graphCompleted = false;
+  try {
+    const graphToken = await getGraphAccessToken(mailbox);
+    const graphMessages = [];
+    for (const folder of mailboxFolders) {
+      graphMessages.push(...await fetchGraphMessages(graphToken, folder));
+    }
+    const found = scanMessagesForRecoveryLink(graphMessages, expectedEmail);
+    if (found) return found;
+    graphCompleted = true;
+  } catch (error) {
+    errors.push(error);
+  }
+
+  if (graphCompleted) return null;
+
+  const imapMessages = [];
+  for (const folder of mailboxFolders) {
+    try {
+      imapMessages.push(...await fetchImapMessages(mailbox, folder));
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  const found = scanMessagesForRecoveryLink(imapMessages, expectedEmail);
   if (found) return found;
 
   if (errors.length && errors.every((error) => error.status === 502 || error.code === 'GRAPH_PERMISSION_MISSING')) {
@@ -714,13 +826,13 @@ app.put('/api/settings', requireAuth, requireAdmin, (req, res) => {
 });
 
 app.get('/api/overview', requireAuth, (_req, res) => {
-  const accounts = db.prepare('SELECT * FROM accounts ORDER BY created_at ASC').all();
+  const accounts = db.prepare(`SELECT * FROM accounts ${accountOrderSql}`).all();
   const users = db.prepare('SELECT id, username, role, enabled, created_at FROM users ORDER BY created_at DESC').all();
   res.json({ accounts, users, bookings: bookingList() });
 });
 
 app.get('/api/accounts', requireAuth, (_req, res) => {
-  res.json(db.prepare('SELECT * FROM accounts ORDER BY created_at ASC').all());
+  res.json(db.prepare(`SELECT * FROM accounts ${accountOrderSql}`).all());
 });
 
 app.get('/api/account-names', requireAuth, (_req, res) => {
@@ -843,17 +955,36 @@ app.post('/api/accounts', requireAuth, requireAdmin, (req, res) => {
   const { name, login, password, remark, status = 'active' } = req.body;
   if (!name?.trim() || !login?.trim() || !password?.trim()) return res.status(400).json({ error: '账号名称、账号和密码必填' });
   const id = nanoid();
-  db.prepare('INSERT INTO accounts (id, name, login, password, remark, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
+  const maxOrder = db.prepare('SELECT COALESCE(MAX(sort_order), 0) as value FROM accounts').get();
+  db.prepare('INSERT INTO accounts (id, name, login, password, remark, status, sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(
     id,
     name.trim(),
     login.trim(),
     password.trim(),
     remark || '',
     status,
+    Number(maxOrder.value || 0) + 10,
     now()
   );
   audit(req.user.id, 'create', 'account', id, `新增账号 ${name}`);
   res.json(db.prepare('SELECT * FROM accounts WHERE id = ?').get(id));
+});
+
+app.post('/api/accounts/order', requireAuth, requireAdmin, (req, res) => {
+  const ids = Array.isArray(req.body.ids) ? req.body.ids.map((id) => String(id)) : [];
+  const currentIds = db.prepare(`SELECT id FROM accounts ${accountOrderSql}`).all().map((item) => item.id);
+  if (!ids.length || ids.length !== currentIds.length || new Set(ids).size !== currentIds.length) {
+    return res.status(400).json({ error: '\u8d26\u53f7\u6392\u5e8f\u6570\u636e\u4e0d\u5b8c\u6574' });
+  }
+  const currentSet = new Set(currentIds);
+  if (ids.some((id) => !currentSet.has(id))) return res.status(400).json({ error: '\u8d26\u53f7\u6392\u5e8f\u6570\u636e\u4e0d\u6b63\u786e' });
+  const update = db.prepare('UPDATE accounts SET sort_order = ? WHERE id = ?');
+  const transaction = db.transaction(() => {
+    ids.forEach((id, index) => update.run((index + 1) * 10, id));
+  });
+  transaction();
+  audit(req.user.id, 'update', 'account', null, '\u8c03\u6574\u8d26\u53f7\u6392\u5e8f');
+  res.json(db.prepare(`SELECT * FROM accounts ${accountOrderSql}`).all());
 });
 
 app.put('/api/accounts/:id', requireAuth, requireAdmin, (req, res) => {
@@ -890,6 +1021,23 @@ app.post('/api/accounts/:id/mail-code', requireAuth, async (req, res) => {
     res.json(result);
   } catch (error) {
     res.status(error.status || 500).json({ error: error.message || '获取验证码失败，请联系管理员' });
+  }
+});
+
+app.post('/api/accounts/:id/password-reset-link', requireAuth, async (req, res) => {
+  const account = db.prepare('SELECT * FROM accounts WHERE id = ?').get(req.params.id);
+  if (!account) return res.status(404).json({ error: '\u8d26\u53f7\u4e0d\u5b58\u5728' });
+  const email = extractFirstEmail(account.remark);
+  if (!email) return res.status(404).json({ error: '\u672a\u627e\u5230\u90ae\u7bb1\uff0c\u8bf7\u8054\u7cfb\u7ba1\u7406\u5458' });
+  const mailbox = db.prepare('SELECT * FROM mailboxes WHERE email = ?').get(email);
+  if (!mailbox) return res.status(404).json({ error: '\u672a\u627e\u5230\u90ae\u7bb1\uff0c\u8bf7\u8054\u7cfb\u7ba1\u7406\u5458' });
+  try {
+    const result = await findMailboxRecoveryLink(mailbox, email);
+    if (!result) return res.status(404).json({ error: '\u672a\u627e\u5230\u91cd\u7f6e\u5bc6\u7801\u94fe\u63a5\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5' });
+    audit(req.user.id, 'lookup', 'password_reset_link', account.id, `\u83b7\u53d6\u91cd\u7f6e\u5bc6\u7801\u94fe\u63a5 ${account.name}`);
+    res.json(result);
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message || '\u83b7\u53d6\u91cd\u7f6e\u5bc6\u7801\u94fe\u63a5\u5931\u8d25\uff0c\u8bf7\u8054\u7cfb\u7ba1\u7406\u5458' });
   }
 });
 
