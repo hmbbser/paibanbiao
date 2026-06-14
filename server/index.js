@@ -34,6 +34,10 @@ function shortCommit(hash) {
   return hash ? String(hash).trim().slice(0, 7) : '';
 }
 
+function normalizeNameKey(name) {
+  return String(name || '').normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+}
+
 async function currentGitCommit() {
   try {
     const { stdout } = await execAsync('git rev-parse HEAD', { cwd: appDir, timeout: 30_000 });
@@ -842,7 +846,8 @@ app.get('/api/account-names', requireAuth, (_req, res) => {
 app.post('/api/account-names', requireAuth, requireAdmin, (req, res) => {
   const name = req.body.name?.trim();
   if (!name) return res.status(400).json({ error: '名称不能为空' });
-  const duplicate = db.prepare('SELECT id FROM account_names WHERE name = ?').get(name);
+  const nameKey = normalizeNameKey(name);
+  const duplicate = db.prepare('SELECT id, name FROM account_names').all().find((item) => normalizeNameKey(item.name) === nameKey);
   if (duplicate) return res.status(409).json({ error: '这个名称已经存在' });
   const id = nanoid();
   db.prepare('INSERT INTO account_names (id, name, created_at) VALUES (?, ?, ?)').run(id, name, now());
@@ -853,7 +858,8 @@ app.post('/api/account-names', requireAuth, requireAdmin, (req, res) => {
 app.put('/api/account-names/:id', requireAuth, requireAdmin, (req, res) => {
   const name = req.body.name?.trim();
   if (!name) return res.status(400).json({ error: '名称不能为空' });
-  const duplicate = db.prepare('SELECT id FROM account_names WHERE name = ? AND id != ?').get(name, req.params.id);
+  const nameKey = normalizeNameKey(name);
+  const duplicate = db.prepare('SELECT id, name FROM account_names WHERE id != ?').all(req.params.id).find((item) => normalizeNameKey(item.name) === nameKey);
   if (duplicate) return res.status(409).json({ error: '这个名称已经存在' });
   const old = db.prepare('SELECT * FROM account_names WHERE id = ?').get(req.params.id);
   if (!old) return res.status(404).json({ error: '名称不存在' });

@@ -179,7 +179,7 @@ function createMockState(): MockState {
     }
   ];
   return {
-    settings: { ...defaultSettings, siteName: '账号出租管理系统', exportVersion: '0.2.6', auditRetentionDays: '7' },
+    settings: { ...defaultSettings, siteName: '账号出租管理系统', exportVersion: '0.2.7', auditRetentionDays: '7' },
     users: [admin, staff],
     accounts,
     mailboxes,
@@ -219,8 +219,18 @@ function loadMockState() {
   }
 }
 
+function normalizeNameKey(name: string) {
+  return name.normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+}
+
 function uniqueNames(names: string[]) {
-  return Array.from(new Set(names.map((name) => name.trim()).filter(Boolean)));
+  const map = new Map<string, string>();
+  names.forEach((name) => {
+    const display = name.trim();
+    const key = normalizeNameKey(display);
+    if (display && key && !map.has(key)) map.set(key, display);
+  });
+  return Array.from(map.values());
 }
 
 function sortAccountsByOrder(accounts: Account[]) {
@@ -457,7 +467,7 @@ async function mockApi<T>(url: string, options: RequestInit = {}): Promise<T> {
     saveMockState(state);
     return ok({ settings: state.settings });
   }
-  if (url === '/api/admin/version') return ok({ current: '0.2.6-local', latest: '0.2.6-local', hasUpdate: false, repo: 'hmbbser/paibanbiao', branch: 'main' });
+  if (url === '/api/admin/version') return ok({ current: '0.2.7-local', latest: '0.2.7-local', hasUpdate: false, repo: 'hmbbser/paibanbiao', branch: 'main' });
   if (url === '/api/admin/update' && method === 'POST') return ok({ message: '本地 UI 模式不执行真实更新' });
   if (url === '/api/admin/import' && method === 'POST') {
     if (options.body instanceof FormData) {
@@ -632,7 +642,8 @@ async function mockApi<T>(url: string, options: RequestInit = {}): Promise<T> {
     const body = readBody<Partial<AccountName>>(options);
     const name = body.name?.trim();
     if (!name) return fail('名称不能为空');
-    if (state.accountNames.some((item) => item.name === name)) return fail('这个名称已经存在');
+    const nameKey = normalizeNameKey(name);
+    if (state.accountNames.some((item) => normalizeNameKey(item.name) === nameKey)) return fail('这个名称已经存在');
     const item: AccountName = { id: crypto.randomUUID(), name, created_at: new Date().toISOString() };
     state.accountNames.push(item);
     addMockAudit(state, sessionUser, 'create', 'account_name', `新增账号名称 ${name}`);
@@ -643,7 +654,8 @@ async function mockApi<T>(url: string, options: RequestInit = {}): Promise<T> {
     const body = readBody<Partial<AccountName>>(options);
     const name = body.name?.trim();
     if (!name) return fail('名称不能为空');
-    if (state.accountNames.some((item) => item.id !== accountNameMatch[1] && item.name === name)) return fail('这个名称已经存在');
+    const nameKey = normalizeNameKey(name);
+    if (state.accountNames.some((item) => item.id !== accountNameMatch[1] && normalizeNameKey(item.name) === nameKey)) return fail('这个名称已经存在');
     const old = state.accountNames.find((item) => item.id === accountNameMatch[1]);
     state.accountNames = state.accountNames.map((item) => item.id === accountNameMatch[1] ? { ...item, name } : item);
     addMockAudit(state, sessionUser, 'update', 'account_name', `修改账号名称 ${old?.name || accountNameMatch[1]} -> ${name}`);
@@ -1795,11 +1807,58 @@ function BookingDrawer({
   const [formError, setFormError] = useState('');
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
+  const [accountPickerOpen, setAccountPickerOpen] = useState(false);
+  const [accountCategoryOpen, setAccountCategoryOpen] = useState(false);
+  const [accountCategory, setAccountCategory] = useState('all');
+  const [accountNameLibrary, setAccountNameLibrary] = useState<string[]>([]);
+  const accountPickerRef = useRef<HTMLDivElement>(null);
   const selectedAccount = accounts.find((account) => account.id === form.account_id);
   const activeAccounts = accounts.filter((account) => account.status === 'active');
   const selectableAccounts = booking && selectedAccount && selectedAccount.status !== 'active'
     ? [selectedAccount, ...activeAccounts.filter((account) => account.id !== selectedAccount.id)]
     : activeAccounts;
+  const accountCategoryOptions = useMemo(
+    () => uniqueNames([...accountNameLibrary, ...selectableAccounts.map((account) => account.name)]).sort((a, b) => a.localeCompare(b, 'zh-Hans-CN')),
+    [accountNameLibrary, selectableAccounts]
+  );
+  const filteredSelectableAccounts = accountCategory === 'all'
+    ? selectableAccounts
+    : selectableAccounts.filter((account) => normalizeNameKey(account.name) === accountCategory);
+  const selectedAccountCategoryLabel = accountCategory === 'all'
+    ? '全部分类'
+    : accountCategoryOptions.find((name) => normalizeNameKey(name) === accountCategory) || '全部分类';
+
+  useEffect(() => {
+    if (!accountPickerOpen) return undefined;
+    const closePicker = (event: PointerEvent) => {
+      if (!accountPickerRef.current?.contains(event.target as Node)) {
+        setAccountPickerOpen(false);
+        setAccountCategoryOpen(false);
+      }
+    };
+    window.addEventListener('pointerdown', closePicker);
+    return () => window.removeEventListener('pointerdown', closePicker);
+  }, [accountPickerOpen]);
+
+  useEffect(() => {
+    let alive = true;
+    api<AccountName[]>('/api/account-names')
+      .then((items) => {
+        if (alive) setAccountNameLibrary(items.map((item) => item.name));
+      })
+      .catch(() => {
+        if (alive) setAccountNameLibrary([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (accountCategory === 'all') return;
+    const available = new Set(accountCategoryOptions.map(normalizeNameKey));
+    if (!available.has(accountCategory)) setAccountCategory('all');
+  }, [accountCategory, accountCategoryOptions]);
 
   function setDuration(hours: number) {
     const start = booking ? (parseLocalDate(form.starts_at) || new Date()) : new Date();
@@ -1899,13 +1958,100 @@ function BookingDrawer({
           <button className="icon-btn" onClick={onClose}><X size={18} /></button>
         </div>
         <form className="modal-form" onSubmit={save}>
-        <label>
+        <div className="form-field booking-account-field">
           <span>账号</span>
-          <select required value={form.account_id} onChange={(event) => setForm({ ...form, account_id: event.target.value })}>
-            {selectableAccounts.length === 0 && <option value="">暂无可用账号</option>}
-            {selectableAccounts.map((account) => <option key={account.id} value={account.id}>{account.name}{account.status !== 'active' ? '（停用）' : ''}</option>)}
-          </select>
-        </label>
+          <div ref={accountPickerRef} className={`booking-account-picker ${accountPickerOpen ? 'is-open' : ''}`}>
+            <button
+              type="button"
+              className="booking-account-trigger"
+              onClick={() => {
+                setAccountPickerOpen((open) => {
+                  if (open) setAccountCategoryOpen(false);
+                  return !open;
+                });
+              }}
+              aria-expanded={accountPickerOpen}
+            >
+              <span className="booking-account-trigger-main">
+                <Sparkles size={15} />
+                <strong>{selectedAccount ? <MarqueeText text={selectedAccount.name} settings={defaultSettings} /> : '暂无可用账号'}</strong>
+              </span>
+              {selectedAccount && <small>{selectedAccount.login}</small>}
+              <ChevronDown size={16} />
+            </button>
+            {accountPickerOpen && (
+              <div className="booking-account-menu">
+                <div className="booking-account-filter">
+                  <span>分类筛选</span>
+                  <div className={`booking-account-category ${accountCategoryOpen ? 'is-open' : ''}`}>
+                    <button
+                      type="button"
+                      className="booking-account-category-trigger"
+                      onClick={() => setAccountCategoryOpen((open) => !open)}
+                      title={selectedAccountCategoryLabel}
+                    >
+                      <strong>{selectedAccountCategoryLabel}</strong>
+                      <ChevronDown size={14} />
+                    </button>
+                    {accountCategoryOpen && (
+                      <div className="booking-account-category-menu">
+                        <button
+                          type="button"
+                          className={accountCategory === 'all' ? 'active' : ''}
+                          onClick={() => {
+                            setAccountCategory('all');
+                            setAccountCategoryOpen(false);
+                          }}
+                        >
+                          全部分类
+                        </button>
+                        {accountCategoryOptions.map((name) => {
+                          const key = normalizeNameKey(name);
+                          return (
+                            <button
+                              type="button"
+                              key={key}
+                              className={accountCategory === key ? 'active' : ''}
+                              onClick={() => {
+                                setAccountCategory(key);
+                                setAccountCategoryOpen(false);
+                              }}
+                              title={name}
+                            >
+                              {name}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+                {selectableAccounts.length === 0 ? (
+                  <div className="booking-account-empty">暂无可用账号</div>
+                ) : filteredSelectableAccounts.length === 0 ? (
+                  <div className="booking-account-empty">这个分类下没有可用账号</div>
+                ) : filteredSelectableAccounts.map((account) => (
+                  <button
+                    type="button"
+                    key={account.id}
+                    className={`booking-account-option ${account.id === form.account_id ? 'active' : ''} ${account.status !== 'active' ? 'disabled' : ''}`}
+                    onClick={() => {
+                      setForm({ ...form, account_id: account.id });
+                      setAccountPickerOpen(false);
+                      setAccountCategoryOpen(false);
+                    }}
+                  >
+                    <span>
+                      <strong>{account.name}</strong>
+                      <small>账号：{account.login}</small>
+                    </span>
+                    <em>{account.status === 'active' ? '可用' : '停用'}</em>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
         <Field label="租客姓名" value={form.renter_name} onChange={(renter_name) => setForm({ ...form, renter_name })} required />
         <Field label="联系方式" value={form.renter_contact} onChange={(renter_contact) => setForm({ ...form, renter_contact })} />
         <div className="form-field">
@@ -2155,14 +2301,10 @@ function getToastDurationMs(settings: AppSettings) {
   return Math.round(seconds * 1000);
 }
 
-function shouldScrollName(text: string) {
-  return text.trim().length > 7;
-}
-
 function MarqueeText({ text, settings }: { text: string; settings: AppSettings }) {
-  const long = shouldScrollName(text);
   const containerRef = useRef<HTMLSpanElement>(null);
   const textRef = useRef<HTMLSpanElement>(null);
+  const [long, setLong] = useState(false);
   const [motion, setMotion] = useState(() => ({
     duration: getNameScrollSeconds(settings),
     start: 0,
@@ -2170,16 +2312,18 @@ function MarqueeText({ text, settings }: { text: string; settings: AppSettings }
   }));
 
   useLayoutEffect(() => {
-    if (!long) {
-      setMotion({ duration: getNameScrollSeconds(settings), start: 0, end: 0 });
-      return undefined;
-    }
     const container = containerRef.current;
     const label = textRef.current;
     if (!container || !label) return undefined;
 
-    const updateDuration = () => {
+    const updateMotion = () => {
       const baseSeconds = getNameScrollSeconds(settings);
+      const shouldScroll = label.scrollWidth > container.clientWidth + 2;
+      setLong(shouldScroll);
+      if (!shouldScroll) {
+        setMotion({ duration: baseSeconds, start: 0, end: 0 });
+        return;
+      }
       const pixelsPerSecond = 120 / baseSeconds;
       const start = container.clientWidth;
       const end = label.scrollWidth;
@@ -2187,12 +2331,12 @@ function MarqueeText({ text, settings }: { text: string; settings: AppSettings }
       setMotion({ duration: distance / pixelsPerSecond, start, end });
     };
 
-    updateDuration();
-    const observer = new ResizeObserver(updateDuration);
+    updateMotion();
+    const observer = new ResizeObserver(updateMotion);
     observer.observe(container);
     observer.observe(label);
     return () => observer.disconnect();
-  }, [long, settings.nameScrollSeconds, text]);
+  }, [settings.nameScrollSeconds, text]);
 
   const style = {
     '--marquee-duration': `${motion.duration}s`,
@@ -2418,7 +2562,7 @@ function NoticeToast({ message, tone = 'danger' }: { message: string; tone?: 'da
 }
 
 function uniqueAccountNames(accounts: Account[]) {
-  return Array.from(new Set(accounts.map((account) => account.name.trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'));
+  return uniqueNames(accounts.map((account) => account.name)).sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'));
 }
 
 function AccountNameFilter({
@@ -2436,8 +2580,8 @@ function AccountNameFilter({
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-  const options = useMemo(() => names?.length ? names : uniqueAccountNames(accounts), [accounts, names]);
-  const selectedSet = useMemo(() => new Set(selected), [selected]);
+  const options = useMemo(() => uniqueNames(names?.length ? names : uniqueAccountNames(accounts)), [accounts, names]);
+  const selectedSet = useMemo(() => new Set(selected.map(normalizeNameKey)), [selected]);
 
   useEffect(() => {
     if (!open) return;
@@ -2450,14 +2594,15 @@ function AccountNameFilter({
 
   useEffect(() => {
     if (!selected.length) return;
-    const available = new Set(options);
-    const next = selected.filter((item) => available.has(item));
+    const available = new Set(options.map(normalizeNameKey));
+    const next = selected.filter((item) => available.has(normalizeNameKey(item)));
     if (next.length !== selected.length) onChange(next);
   }, [options, selected, onChange]);
 
   function toggle(name: string) {
-    const next = selectedSet.has(name)
-      ? selected.filter((item) => item !== name)
+    const key = normalizeNameKey(name);
+    const next = selectedSet.has(key)
+      ? selected.filter((item) => normalizeNameKey(item) !== key)
       : [...selected, name];
     onChange(next);
   }
@@ -2487,7 +2632,7 @@ function AccountNameFilter({
           <div className="game-filter-options">
             {options.map((name) => (
               <label className="game-filter-option" key={name}>
-                <input type="checkbox" checked={selectedSet.has(name)} onChange={() => toggle(name)} />
+                <input type="checkbox" checked={selectedSet.has(normalizeNameKey(name))} onChange={() => toggle(name)} />
                 <span>{name}</span>
               </label>
             ))}
@@ -2677,6 +2822,27 @@ function MailboxesPanel() {
     setMessage(text);
   }
 
+  async function copyMailboxValue(value: string, label: string) {
+    try {
+      await copyTextToClipboard(value);
+      showMessage(`${label}已复制`);
+    } catch (error) {
+      showMessage((error as Error).message || '复制失败', 'danger');
+    }
+  }
+
+  const MailboxCopyValue = ({ value, label, children, className = '' }: { value: string; label: string; children: React.ReactNode; className?: string }) => (
+    <button
+      type="button"
+      className={`mailbox-copy-value ${className}`}
+      onClick={() => copyMailboxValue(value, label)}
+      title={`点击复制${label}`}
+    >
+      <Copy size={13} />
+      <span>{children}</span>
+    </button>
+  );
+
   return (
     <Panel
       title="邮箱管理"
@@ -2703,10 +2869,10 @@ function MailboxesPanel() {
         </div>
         {visibleMailboxes.map((mailbox) => (
           <div className="admin-table-row mailbox-table-grid" key={mailbox.id}>
-            <span className="mailbox-email">{mailbox.email}</span>
-            <span>{maskSecret(mailbox.password, 3, 2)}</span>
-            <span className="mono-value">{maskSecret(mailbox.client_id, 8, 6)}</span>
-            <span className="mono-value token-preview">{maskSecret(mailbox.refresh_token, 10, 6)}</span>
+            <MailboxCopyValue value={mailbox.email} label="邮箱" className="mailbox-email mailbox-visible-value">{mailbox.email}</MailboxCopyValue>
+            <MailboxCopyValue value={mailbox.password} label="密码" className="mono-value mailbox-visible-value">{mailbox.password}</MailboxCopyValue>
+            <MailboxCopyValue value={mailbox.client_id} label="Client ID" className="mono-value">{maskSecret(mailbox.client_id, 8, 6)}</MailboxCopyValue>
+            <MailboxCopyValue value={mailbox.refresh_token} label="Refresh Token" className="mono-value token-preview">{maskSecret(mailbox.refresh_token, 10, 6)}</MailboxCopyValue>
             <span>{formatDateTime(mailbox.updated_at || mailbox.created_at)}</span>
             <div className="row-actions">
               <button className="ghost-action" onClick={() => setModal(mailbox)}>编辑</button>
@@ -2719,6 +2885,33 @@ function MailboxesPanel() {
           </div>
         ))}
         {visibleMailboxes.length === 0 && <div className="empty-table">{mailboxes.length === 0 ? '还没有邮箱，点击右上角“添加邮箱”或批量导入。' : '没有匹配的邮箱。'}</div>}
+      </div>
+      <div className="mobile-mailbox-cards">
+        {visibleMailboxes.map((mailbox) => (
+          <article className="mobile-mailbox-card" key={mailbox.id}>
+            <div className="mobile-mailbox-card-head">
+              <MailboxCopyValue value={mailbox.email} label="邮箱" className="mailbox-email mailbox-visible-value">{mailbox.email}</MailboxCopyValue>
+            </div>
+            <div className="mobile-mailbox-fields">
+              <span>密码</span>
+              <MailboxCopyValue value={mailbox.password} label="密码" className="mono-value mailbox-visible-value">{mailbox.password}</MailboxCopyValue>
+              <span>Client ID</span>
+              <MailboxCopyValue value={mailbox.client_id} label="Client ID" className="mono-value">{maskSecret(mailbox.client_id, 8, 6)}</MailboxCopyValue>
+              <span>Refresh Token</span>
+              <MailboxCopyValue value={mailbox.refresh_token} label="Refresh Token" className="mono-value token-preview">{maskSecret(mailbox.refresh_token, 10, 6)}</MailboxCopyValue>
+              <span>更新时间</span>
+              <strong>{formatDateTime(mailbox.updated_at || mailbox.created_at)}</strong>
+            </div>
+            <div className="mobile-mailbox-actions">
+              <button className="ghost-action" onClick={() => setModal(mailbox)}>编辑</button>
+              <DeleteButton
+                url={`/api/mailboxes/${mailbox.id}`}
+                refresh={loadMailboxes}
+                body={`确定删除邮箱 ${mailbox.email} 吗？`}
+              />
+            </div>
+          </article>
+        ))}
       </div>
 
       <NoticeToast message={message} tone={messageTone} />
@@ -2915,9 +3108,9 @@ function AccountsPanel({ user, settings, accounts, refresh }: { user: User; sett
     const managed = accountNames.map((item) => item.name);
     return uniqueNames([...managed, ...accounts.map((account) => account.name)]).sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'));
   }, [accountNames, accounts]);
-  const selectedNameSet = useMemo(() => new Set(nameFilter), [nameFilter]);
+  const selectedNameSet = useMemo(() => new Set(nameFilter.map(normalizeNameKey)), [nameFilter]);
   const visibleAccounts = accounts.filter((account) => {
-    if (selectedNameSet.size && !selectedNameSet.has(account.name)) return false;
+    if (selectedNameSet.size && !selectedNameSet.has(normalizeNameKey(account.name))) return false;
     if (statusQuickFilter === 'active' && account.status !== 'active') return false;
     if (statusQuickFilter === 'disabled' && account.status === 'active') return false;
     if (!searchTerm) return true;
