@@ -181,7 +181,7 @@ function createMockState(): MockState {
   ];
   accounts[0].mailbox_id = mailboxes[0].id;
   return {
-    settings: { ...defaultSettings, siteName: '账号出租管理系统', exportVersion: '0.2.9', auditRetentionDays: '7' },
+    settings: { ...defaultSettings, siteName: '账号出租管理系统', exportVersion: '0.2.10', auditRetentionDays: '7' },
     users: [admin, staff],
     accounts,
     mailboxes,
@@ -471,7 +471,7 @@ async function mockApi<T>(url: string, options: RequestInit = {}): Promise<T> {
     saveMockState(state);
     return ok({ settings: state.settings });
   }
-  if (url === '/api/admin/version') return ok({ current: '0.2.9-local', latest: '0.2.9-local', hasUpdate: false, repo: 'hmbbser/paibanbiao', branch: 'main' });
+  if (url === '/api/admin/version') return ok({ current: '0.2.10-local', latest: '0.2.10-local', hasUpdate: false, repo: 'hmbbser/paibanbiao', branch: 'main' });
   if (url === '/api/admin/update' && method === 'POST') return ok({ message: '本地 UI 模式不执行真实更新' });
   if (url === '/api/admin/import' && method === 'POST') {
     if (options.body instanceof FormData) {

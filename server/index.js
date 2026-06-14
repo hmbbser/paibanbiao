@@ -1358,10 +1358,11 @@ app.post('/api/admin/update', requireAuth, requireAdmin, async (req, res) => {
     const quotedAppDir = shellQuote(appDir);
     const quotedBranch = shellQuote(githubBranch);
     const composeCommand = `
+      cd "$UPDATE_DIR"
       if docker compose version >/dev/null 2>&1; then
-        docker compose up -d --build --force-recreate --remove-orphans
+        docker compose --project-directory "$UPDATE_DIR" -f "$UPDATE_DIR/docker-compose.yml" up -d --build --force-recreate --remove-orphans
       elif command -v docker-compose >/dev/null 2>&1; then
-        docker-compose up -d --build --force-recreate --remove-orphans
+        docker-compose --project-directory "$UPDATE_DIR" -f "$UPDATE_DIR/docker-compose.yml" up -d --build --force-recreate --remove-orphans
       else
         echo "docker compose/docker-compose 不可用" >&2
         exit 1
@@ -1371,21 +1372,28 @@ app.post('/api/admin/update', requireAuth, requireAdmin, async (req, res) => {
       set -eu
       APP_DIR=${quotedAppDir}
       BRANCH=${quotedBranch}
+      UPDATE_DIR="$APP_DIR"
       cd "$APP_DIR"
+      git config --global --add safe.directory "$APP_DIR" || true
       git fetch origin "$BRANCH"
       git reset --hard "origin/$BRANCH"
       if command -v docker >/dev/null 2>&1 && [ -S /var/run/docker.sock ]; then
         SELF_ID="$(cat /etc/hostname 2>/dev/null || true)"
         SELF_IMAGE="$(docker inspect -f '{{.Config.Image}}' "$SELF_ID" 2>/dev/null || true)"
+        HOST_APP_DIR="$(docker inspect -f '{{range .Mounts}}{{printf "%s|%s\n" .Destination .Source}}{{end}}' "$SELF_ID" 2>/dev/null | while IFS='|' read -r dest source; do if [ "$dest" = "$APP_DIR" ]; then printf '%s' "$source"; break; fi; done || true)"
+        if [ -z "$HOST_APP_DIR" ]; then
+          HOST_APP_DIR="$APP_DIR"
+        fi
         if [ -n "$SELF_IMAGE" ]; then
           docker rm -f cute-schedule-updater >/dev/null 2>&1 || true
           docker run -d --name cute-schedule-updater \\
             -v /var/run/docker.sock:/var/run/docker.sock \\
-            -v "$APP_DIR":"$APP_DIR" \\
-            -w "$APP_DIR" \\
+            -v "$HOST_APP_DIR":"$HOST_APP_DIR" \\
+            -w "$HOST_APP_DIR" \\
             -e APP_DIR="$APP_DIR" \\
+            -e UPDATE_DIR="$HOST_APP_DIR" \\
             -e GITHUB_BRANCH="$BRANCH" \\
-            "$SELF_IMAGE" sh -lc 'set -eu; cd "$APP_DIR"; git config --global --add safe.directory "$APP_DIR" || true; git fetch origin "$GITHUB_BRANCH"; git reset --hard "origin/$GITHUB_BRANCH"; ${composeCommand}'
+            "$SELF_IMAGE" sh -lc 'set -eu; cd "$UPDATE_DIR"; git config --global --add safe.directory "$UPDATE_DIR" || true; git fetch origin "$GITHUB_BRANCH"; git reset --hard "origin/$GITHUB_BRANCH"; ${composeCommand}'
           exit 0
         fi
       fi
