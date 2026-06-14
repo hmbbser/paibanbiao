@@ -208,6 +208,30 @@ function upsertMailbox(item) {
   return 'created';
 }
 
+function normalizeMailboxId(value) {
+  return String(value || '').trim();
+}
+
+function selectedMailboxError(mailboxId) {
+  if (!mailboxId) return '';
+  return db.prepare('SELECT id FROM mailboxes WHERE id = ?').get(mailboxId) ? '' : '选择的收件邮箱不存在';
+}
+
+function mailboxForAccount(account) {
+  if (!account.mailbox_id) {
+    const error = new Error('请先在账号里选择收件邮箱');
+    error.status = 404;
+    throw error;
+  }
+  const mailbox = db.prepare('SELECT * FROM mailboxes WHERE id = ?').get(account.mailbox_id);
+  if (!mailbox) {
+    const error = new Error('账号绑定的收件邮箱不存在，请重新选择');
+    error.status = 404;
+    throw error;
+  }
+  return mailbox;
+}
+
 function stripHtml(value) {
   return String(value || '')
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
@@ -959,16 +983,20 @@ app.post('/api/mailboxes/import', requireAuth, requireAdmin, (req, res) => {
 
 app.post('/api/accounts', requireAuth, requireAdmin, (req, res) => {
   const { name, login, password, remark, status = 'active' } = req.body;
+  const mailboxId = normalizeMailboxId(req.body.mailbox_id);
+  const mailboxError = selectedMailboxError(mailboxId);
+  if (mailboxError) return res.status(400).json({ error: mailboxError });
   if (!name?.trim() || !login?.trim() || !password?.trim()) return res.status(400).json({ error: '账号名称、账号和密码必填' });
   const id = nanoid();
   const maxOrder = db.prepare('SELECT COALESCE(MAX(sort_order), 0) as value FROM accounts').get();
-  db.prepare('INSERT INTO accounts (id, name, login, password, remark, status, sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(
+  db.prepare('INSERT INTO accounts (id, name, login, password, remark, status, mailbox_id, sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
     id,
     name.trim(),
     login.trim(),
     password.trim(),
     remark || '',
     status,
+    mailboxId || null,
     Number(maxOrder.value || 0) + 10,
     now()
   );
@@ -995,12 +1023,16 @@ app.post('/api/accounts/order', requireAuth, requireAdmin, (req, res) => {
 
 app.put('/api/accounts/:id', requireAuth, requireAdmin, (req, res) => {
   const { name, login, password, remark, status = 'active' } = req.body;
-  db.prepare('UPDATE accounts SET name = ?, login = ?, password = ?, remark = ?, status = ? WHERE id = ?').run(
+  const mailboxId = normalizeMailboxId(req.body.mailbox_id);
+  const mailboxError = selectedMailboxError(mailboxId);
+  if (mailboxError) return res.status(400).json({ error: mailboxError });
+  db.prepare('UPDATE accounts SET name = ?, login = ?, password = ?, remark = ?, status = ?, mailbox_id = ? WHERE id = ?').run(
     name,
     login,
     password,
     remark || '',
     status,
+    mailboxId || null,
     req.params.id
   );
   audit(req.user.id, 'update', 'account', req.params.id, `修改账号 ${name}`);
@@ -1016,11 +1048,9 @@ app.delete('/api/accounts/:id', requireAuth, requireAdmin, (req, res) => {
 app.post('/api/accounts/:id/mail-code', requireAuth, async (req, res) => {
   const account = db.prepare('SELECT * FROM accounts WHERE id = ?').get(req.params.id);
   if (!account) return res.status(404).json({ error: '账号不存在' });
-  const email = extractFirstEmail(account.remark);
-  if (!email) return res.status(404).json({ error: '未找到邮箱，请联系管理员' });
-  const mailbox = db.prepare('SELECT * FROM mailboxes WHERE email = ?').get(email);
-  if (!mailbox) return res.status(404).json({ error: '未找到邮箱，请联系管理员' });
   try {
+    const mailbox = mailboxForAccount(account);
+    const email = normalizeEmail(mailbox.email);
     const result = await findMailboxCode(mailbox, email);
     if (!result) return res.status(404).json({ error: '未找到验证码，请稍后重试' });
     audit(req.user.id, 'lookup', 'mail_code', account.id, `获取登录验证码 ${account.name}`);
@@ -1033,11 +1063,9 @@ app.post('/api/accounts/:id/mail-code', requireAuth, async (req, res) => {
 app.post('/api/accounts/:id/password-reset-link', requireAuth, async (req, res) => {
   const account = db.prepare('SELECT * FROM accounts WHERE id = ?').get(req.params.id);
   if (!account) return res.status(404).json({ error: '\u8d26\u53f7\u4e0d\u5b58\u5728' });
-  const email = extractFirstEmail(account.remark);
-  if (!email) return res.status(404).json({ error: '\u672a\u627e\u5230\u90ae\u7bb1\uff0c\u8bf7\u8054\u7cfb\u7ba1\u7406\u5458' });
-  const mailbox = db.prepare('SELECT * FROM mailboxes WHERE email = ?').get(email);
-  if (!mailbox) return res.status(404).json({ error: '\u672a\u627e\u5230\u90ae\u7bb1\uff0c\u8bf7\u8054\u7cfb\u7ba1\u7406\u5458' });
   try {
+    const mailbox = mailboxForAccount(account);
+    const email = normalizeEmail(mailbox.email);
     const result = await findMailboxRecoveryLink(mailbox, email);
     if (!result) return res.status(404).json({ error: '\u672a\u627e\u5230\u91cd\u7f6e\u5bc6\u7801\u94fe\u63a5\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5' });
     audit(req.user.id, 'lookup', 'password_reset_link', account.id, `\u83b7\u53d6\u91cd\u7f6e\u5bc6\u7801\u94fe\u63a5 ${account.name}`);

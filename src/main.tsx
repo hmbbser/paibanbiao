@@ -32,7 +32,7 @@ import './styles.css';
 type Role = 'admin' | 'user';
 type User = { id: string; username: string; role: Role; enabled: boolean; created_at: string; can_switch?: boolean };
 type AppSettings = { siteName: string; timezone: string; defaultView: string; exportVersion?: string; auditRetentionDays?: string; auditRetentionCustomDays?: string; accountCopyFields?: string; nameScrollSeconds?: string; toastDurationSeconds?: string };
-type Account = { id: string; name: string; login: string; password: string; remark: string; status: string; sort_order?: number; created_at: string };
+type Account = { id: string; name: string; login: string; password: string; remark: string; status: string; mailbox_id?: string; sort_order?: number; created_at: string };
 type AccountName = { id: string; name: string; created_at: string };
 type Mailbox = { id: string; email: string; password: string; client_id: string; refresh_token: string; created_at: string; updated_at: string };
 type MailCodeResult = { code: string; email: string; recipient?: string; mailbox?: string; subject?: string; sender?: string; receivedAt?: string };
@@ -178,8 +178,9 @@ function createMockState(): MockState {
       updated_at: mockNow(-20)
     }
   ];
+  accounts[0].mailbox_id = mailboxes[0].id;
   return {
-    settings: { ...defaultSettings, siteName: '账号出租管理系统', exportVersion: '0.2.7', auditRetentionDays: '7' },
+    settings: { ...defaultSettings, siteName: '账号出租管理系统', exportVersion: '0.2.8', auditRetentionDays: '7' },
     users: [admin, staff],
     accounts,
     mailboxes,
@@ -316,11 +317,6 @@ const emailRegex = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
 
 function normalizeEmailText(value: string) {
   return value.trim().toLowerCase();
-}
-
-function extractEmailFromText(value: string) {
-  const match = value.match(emailRegex);
-  return match ? normalizeEmailText(match[0]) : '';
 }
 
 function parseMailboxImportText(content: string, delimiter = '') {
@@ -467,7 +463,7 @@ async function mockApi<T>(url: string, options: RequestInit = {}): Promise<T> {
     saveMockState(state);
     return ok({ settings: state.settings });
   }
-  if (url === '/api/admin/version') return ok({ current: '0.2.7-local', latest: '0.2.7-local', hasUpdate: false, repo: 'hmbbser/paibanbiao', branch: 'main' });
+  if (url === '/api/admin/version') return ok({ current: '0.2.8-local', latest: '0.2.8-local', hasUpdate: false, repo: 'hmbbser/paibanbiao', branch: 'main' });
   if (url === '/api/admin/update' && method === 'POST') return ok({ message: '本地 UI 模式不执行真实更新' });
   if (url === '/api/admin/import' && method === 'POST') {
     if (options.body instanceof FormData) {
@@ -546,8 +542,11 @@ async function mockApi<T>(url: string, options: RequestInit = {}): Promise<T> {
   const mailCodeMatch = url.match(/^\/api\/accounts\/([^/]+)\/mail-code$/);
   if (mailCodeMatch && method === 'POST') {
     const account = state.accounts.find((item) => item.id === mailCodeMatch[1]);
-    const email = extractEmailFromText(account?.remark || '');
-    if (!account || !email || !state.mailboxes.some((mailbox) => mailbox.email === email)) return fail('未找到邮箱，请联系管理员');
+    if (!account) return fail('账号不存在');
+    if (!account.mailbox_id) return fail('请先在账号里选择收件邮箱');
+    const mailbox = state.mailboxes.find((item) => item.id === account.mailbox_id);
+    const email = mailbox?.email || '';
+    if (!mailbox) return fail('账号绑定的收件邮箱不存在，请重新选择');
     const codeChars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
     const mockCode = Array.from({ length: 5 }, () => codeChars[Math.floor(Math.random() * codeChars.length)]).join('');
     return ok({
@@ -564,8 +563,11 @@ async function mockApi<T>(url: string, options: RequestInit = {}): Promise<T> {
   const passwordResetMatch = url.match(/^\/api\/accounts\/([^/]+)\/password-reset-link$/);
   if (passwordResetMatch && method === 'POST') {
     const account = state.accounts.find((item) => item.id === passwordResetMatch[1]);
-    const email = extractEmailFromText(account?.remark || '');
-    if (!account || !email || !state.mailboxes.some((mailbox) => mailbox.email === email)) return fail('\u672a\u627e\u5230\u90ae\u7bb1\uff0c\u8bf7\u8054\u7cfb\u7ba1\u7406\u5458');
+    if (!account) return fail('账号不存在');
+    if (!account.mailbox_id) return fail('请先在账号里选择收件邮箱');
+    const mailbox = state.mailboxes.find((item) => item.id === account.mailbox_id);
+    const email = mailbox?.email || '';
+    if (!mailbox) return fail('账号绑定的收件邮箱不存在，请重新选择');
     return ok({
       link: 'https://help.steampowered.com/ja/wizard/VerifyCode?i=406&s=710806048765760421&m=2&c=5H64C',
       email,
@@ -606,6 +608,8 @@ async function mockApi<T>(url: string, options: RequestInit = {}): Promise<T> {
   const accountMatch = url.match(/^\/api\/accounts\/(.+)$/);
   if (url === '/api/accounts' && method === 'POST') {
     const body = readBody<Partial<Account>>(options);
+    const mailboxId = String(body.mailbox_id || '').trim();
+    if (mailboxId && !state.mailboxes.some((mailbox) => mailbox.id === mailboxId)) return fail('选择的收件邮箱不存在');
     const maxOrder = Math.max(0, ...state.accounts.map((account) => Number(account.sort_order) || 0));
     const account: Account = {
       id: crypto.randomUUID(),
@@ -614,6 +618,7 @@ async function mockApi<T>(url: string, options: RequestInit = {}): Promise<T> {
       password: body.password || '',
       remark: body.remark || '',
       status: body.status || 'active',
+      mailbox_id: mailboxId,
       sort_order: maxOrder + 10,
       created_at: new Date().toISOString()
     };
@@ -671,7 +676,9 @@ async function mockApi<T>(url: string, options: RequestInit = {}): Promise<T> {
   }
   if (accountMatch && method === 'PUT') {
     const body = readBody<Partial<Account>>(options);
-    state.accounts = state.accounts.map((item) => item.id === accountMatch[1] ? { ...item, ...body } : item);
+    const mailboxId = String(body.mailbox_id || '').trim();
+    if (mailboxId && !state.mailboxes.some((mailbox) => mailbox.id === mailboxId)) return fail('选择的收件邮箱不存在');
+    state.accounts = state.accounts.map((item) => item.id === accountMatch[1] ? { ...item, ...body, mailbox_id: mailboxId } : item);
     addMockAudit(state, sessionUser, 'update', 'account', `修改账号 ${body.name || accountMatch[1]}`);
     saveMockState(state);
     return ok({ success: true });
@@ -3956,6 +3963,74 @@ function AccountNameManagerModal({
   );
 }
 
+type FancySelectOption = {
+  value: string;
+  label: string;
+  hint?: string;
+};
+
+function FancySelect({
+  label,
+  value,
+  options,
+  placeholder,
+  onChange
+}: {
+  label: string;
+  value: string;
+  options: FancySelectOption[];
+  placeholder?: string;
+  onChange: (value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const selected = options.find((item) => item.value === value);
+
+  useEffect(() => {
+    if (!open) return undefined;
+
+    function handlePointerDown(event: PointerEvent) {
+      if (rootRef.current && !rootRef.current.contains(event.target as Node)) setOpen(false);
+    }
+
+    window.addEventListener('pointerdown', handlePointerDown);
+    return () => window.removeEventListener('pointerdown', handlePointerDown);
+  }, [open]);
+
+  return (
+    <label className="fancy-select-field">
+      <span>{label}</span>
+      <div className={`fancy-select ${open ? 'is-open' : ''}`} ref={rootRef}>
+        <button type="button" className="fancy-select-trigger" onClick={() => setOpen((next) => !next)} aria-expanded={open}>
+          <div>
+            <strong>{selected?.label || placeholder || '请选择'}</strong>
+            {selected?.hint && <small>{selected.hint}</small>}
+          </div>
+          <ChevronDown size={17} />
+        </button>
+        {open && (
+          <div className="fancy-select-menu">
+            {options.map((item) => (
+              <button
+                key={item.value || '__empty__'}
+                type="button"
+                className={item.value === value ? 'active' : ''}
+                onClick={() => {
+                  onChange(item.value);
+                  setOpen(false);
+                }}
+              >
+                <strong>{item.label}</strong>
+                {item.hint && <small>{item.hint}</small>}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </label>
+  );
+}
+
 function AccountModal({
   account,
   nameOptions = [],
@@ -3969,14 +4044,43 @@ function AccountModal({
   onClose: () => void;
   onSaved: () => void | Promise<void>;
 }) {
+  const [mailboxes, setMailboxes] = useState<Mailbox[]>([]);
   const [form, setForm] = useState({
     name: account?.name || '',
     login: account?.login || '',
     password: account?.password || '',
     remark: account?.remark || '',
-    status: account?.status || 'active'
+    status: account?.status || 'active',
+    mailbox_id: account?.mailbox_id || ''
   });
   const [error, setError] = useState('');
+
+  useEffect(() => {
+    let alive = true;
+    api<Mailbox[]>('/api/mailboxes')
+      .then((items) => {
+        if (alive) setMailboxes(items);
+      })
+      .catch(() => {
+        if (alive) setMailboxes([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const statusOptions: FancySelectOption[] = [
+    { value: 'active', label: '正常', hint: '账号可正常使用' },
+    { value: 'disabled', label: '停用', hint: '账号会被标记为死亡/停用' }
+  ];
+  const mailboxOptions: FancySelectOption[] = [
+    { value: '', label: '暂不绑定收件邮箱', hint: '后续也可以再补选' },
+    ...mailboxes.map((mailbox) => ({
+      value: mailbox.id,
+      label: mailbox.email,
+      hint: '收验证码和找回链接都走这个邮箱'
+    }))
+  ];
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -4010,13 +4114,21 @@ function AccountModal({
             <Field label="登录账号" value={form.login} onChange={(login) => setForm({ ...form, login })} />
             <Field label="密码" value={form.password} onChange={(password) => setForm({ ...form, password })} />
           </div>
-          <label>
-            <span>状态</span>
-            <select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value })}>
-              <option value="active">正常</option>
-              <option value="disabled">停用</option>
-            </select>
-          </label>
+          <div className="account-select-stack">
+            <FancySelect
+              label="状态"
+              value={form.status}
+              options={statusOptions}
+              onChange={(status) => setForm({ ...form, status })}
+            />
+            <FancySelect
+              label="收件邮箱"
+              value={form.mailbox_id}
+              options={mailboxOptions}
+              placeholder="选择收件邮箱"
+              onChange={(mailbox_id) => setForm({ ...form, mailbox_id })}
+            />
+          </div>
           <label>
             <span>备注</span>
             <textarea placeholder="请输入备注" value={form.remark} onChange={(event) => setForm({ ...form, remark: event.target.value })} />

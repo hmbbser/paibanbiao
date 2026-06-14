@@ -34,6 +34,7 @@ export function migrate() {
       password TEXT NOT NULL,
       remark TEXT DEFAULT '',
       status TEXT NOT NULL DEFAULT 'active',
+      mailbox_id TEXT,
       sort_order INTEGER,
       created_at TEXT NOT NULL
     );
@@ -82,6 +83,9 @@ export function migrate() {
   const accountColumns = db.prepare('PRAGMA table_info(accounts)').all().map((column) => column.name);
   if (!accountColumns.includes('sort_order')) {
     db.exec('ALTER TABLE accounts ADD COLUMN sort_order INTEGER;');
+  }
+  if (!accountColumns.includes('mailbox_id')) {
+    db.exec('ALTER TABLE accounts ADD COLUMN mailbox_id TEXT;');
   }
   ensureAccountSortOrder();
 
