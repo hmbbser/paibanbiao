@@ -1168,7 +1168,16 @@ app.post('/api/admin/update', requireAuth, requireAdmin, async (req, res) => {
     }
     const quotedAppDir = shellQuote(appDir);
     const quotedBranch = shellQuote(githubBranch);
-    const composeCommand = '(docker compose up -d --build --force-recreate --remove-orphans || docker-compose up -d --build --force-recreate --remove-orphans)';
+    const composeCommand = `
+      if docker compose version >/dev/null 2>&1; then
+        docker compose up -d --build --force-recreate --remove-orphans
+      elif command -v docker-compose >/dev/null 2>&1; then
+        docker-compose up -d --build --force-recreate --remove-orphans
+      else
+        echo "docker compose/docker-compose 不可用" >&2
+        exit 1
+      fi
+    `;
     const command = `
       set -eu
       APP_DIR=${quotedAppDir}
