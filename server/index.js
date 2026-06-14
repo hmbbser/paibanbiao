@@ -885,14 +885,18 @@ app.post('/api/account-names', requireAuth, requireAdmin, (req, res) => {
 app.put('/api/account-names/:id', requireAuth, requireAdmin, (req, res) => {
   const name = req.body.name?.trim();
   if (!name) return res.status(400).json({ error: '名称不能为空' });
+  const old = db.prepare('SELECT * FROM account_names WHERE id = ?').get(req.params.id);
+  if (!old) return res.status(404).json({ error: '名称不存在' });
   const nameKey = normalizeNameKey(name);
   const duplicate = db.prepare('SELECT id, name FROM account_names WHERE id != ?').all(req.params.id).find((item) => normalizeNameKey(item.name) === nameKey);
   if (duplicate) return res.status(409).json({ error: '这个名称已经存在' });
-  const old = db.prepare('SELECT * FROM account_names WHERE id = ?').get(req.params.id);
-  if (!old) return res.status(404).json({ error: '名称不存在' });
-  db.prepare('UPDATE account_names SET name = ? WHERE id = ?').run(name, req.params.id);
-  audit(req.user.id, 'update', 'account_name', req.params.id, `修改账号名称 ${old.name} -> ${name}`);
-  res.json(db.prepare('SELECT * FROM account_names WHERE id = ?').get(req.params.id));
+  const syncName = db.transaction(() => {
+    db.prepare('UPDATE account_names SET name = ? WHERE id = ?').run(name, req.params.id);
+    return db.prepare('UPDATE accounts SET name = ? WHERE name = ?').run(name, old.name).changes;
+  });
+  const syncedAccounts = syncName();
+  audit(req.user.id, 'update', 'account_name', req.params.id, `修改账号名称 ${old.name} -> ${name}，同步 ${syncedAccounts} 个账号`);
+  res.json({ ...db.prepare('SELECT * FROM account_names WHERE id = ?').get(req.params.id), syncedAccounts });
 });
 
 app.delete('/api/account-names/:id', requireAuth, requireAdmin, (req, res) => {

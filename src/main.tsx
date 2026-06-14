@@ -181,7 +181,7 @@ function createMockState(): MockState {
   ];
   accounts[0].mailbox_id = mailboxes[0].id;
   return {
-    settings: { ...defaultSettings, siteName: '账号出租管理系统', exportVersion: '0.2.10', auditRetentionDays: '7' },
+    settings: { ...defaultSettings, siteName: '账号出租管理系统', exportVersion: '0.2.11', auditRetentionDays: '7' },
     users: [admin, staff],
     accounts,
     mailboxes,
@@ -471,7 +471,7 @@ async function mockApi<T>(url: string, options: RequestInit = {}): Promise<T> {
     saveMockState(state);
     return ok({ settings: state.settings });
   }
-  if (url === '/api/admin/version') return ok({ current: '0.2.10-local', latest: '0.2.10-local', hasUpdate: false, repo: 'hmbbser/paibanbiao', branch: 'main' });
+  if (url === '/api/admin/version') return ok({ current: '0.2.11-local', latest: '0.2.11-local', hasUpdate: false, repo: 'hmbbser/paibanbiao', branch: 'main' });
   if (url === '/api/admin/update' && method === 'POST') return ok({ message: '本地 UI 模式不执行真实更新' });
   if (url === '/api/admin/import' && method === 'POST') {
     if (options.body instanceof FormData) {
@@ -672,10 +672,17 @@ async function mockApi<T>(url: string, options: RequestInit = {}): Promise<T> {
     const nameKey = normalizeNameKey(name);
     if (state.accountNames.some((item) => item.id !== accountNameMatch[1] && normalizeNameKey(item.name) === nameKey)) return fail('这个名称已经存在');
     const old = state.accountNames.find((item) => item.id === accountNameMatch[1]);
+    if (!old) return fail('名称不存在');
     state.accountNames = state.accountNames.map((item) => item.id === accountNameMatch[1] ? { ...item, name } : item);
-    addMockAudit(state, sessionUser, 'update', 'account_name', `修改账号名称 ${old?.name || accountNameMatch[1]} -> ${name}`);
+    let syncedAccounts = 0;
+    state.accounts = state.accounts.map((account) => {
+      if (normalizeNameKey(account.name) !== normalizeNameKey(old.name)) return account;
+      syncedAccounts += 1;
+      return { ...account, name };
+    });
+    addMockAudit(state, sessionUser, 'update', 'account_name', `修改账号名称 ${old.name} -> ${name}，同步 ${syncedAccounts} 个账号`);
     saveMockState(state);
-    return ok(state.accountNames.find((item) => item.id === accountNameMatch[1]));
+    return ok({ ...state.accountNames.find((item) => item.id === accountNameMatch[1]), syncedAccounts });
   }
   if (accountNameMatch && method === 'DELETE') {
     const old = state.accountNames.find((item) => item.id === accountNameMatch[1]);
@@ -3161,6 +3168,13 @@ function AccountsPanel({ user, settings, accounts, refresh }: { user: User; sett
     loadAccountNames();
   }, []);
 
+  useEffect(() => {
+    if (!modal || modal === 'new') return;
+    const nextAccount = accounts.find((account) => account.id === modal.id);
+    if (!nextAccount) return;
+    if (JSON.stringify(nextAccount) !== JSON.stringify(modal)) setModal(nextAccount);
+  }, [accounts, modal]);
+
   useEffect(() => () => {
     if (copyToastTimer.current) window.clearTimeout(copyToastTimer.current);
   }, []);
@@ -3632,7 +3646,7 @@ function AccountsPanel({ user, settings, accounts, refresh }: { user: User; sett
           names={accountNames}
           onClose={() => setNameManagerOpen(false)}
           onChanged={async () => {
-            await loadAccountNames();
+            await refreshAccountsAndNames();
           }}
         />
       )}
@@ -4078,6 +4092,17 @@ function AccountModal({
     mailbox_id: account?.mailbox_id || ''
   });
   const [error, setError] = useState('');
+
+  useEffect(() => {
+    setForm({
+      name: account?.name || '',
+      login: account?.login || '',
+      password: account?.password || '',
+      remark: account?.remark || '',
+      status: account?.status || 'active',
+      mailbox_id: account?.mailbox_id || ''
+    });
+  }, [account?.id, account?.name, account?.login, account?.password, account?.remark, account?.status, account?.mailbox_id]);
 
   useEffect(() => {
     let alive = true;
