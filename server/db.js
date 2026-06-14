@@ -9,7 +9,7 @@ export const db = new Database(dbPath);
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
-export const TABLES = ['settings', 'users', 'accounts', 'account_names', 'bookings', 'audit_logs'];
+export const TABLES = ['settings', 'users', 'accounts', 'mailboxes', 'account_names', 'bookings', 'audit_logs'];
 
 export function migrate() {
   db.exec(`
@@ -35,6 +35,16 @@ export function migrate() {
       remark TEXT DEFAULT '',
       status TEXT NOT NULL DEFAULT 'active',
       created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS mailboxes (
+      id TEXT PRIMARY KEY,
+      email TEXT NOT NULL UNIQUE,
+      password TEXT DEFAULT '',
+      client_id TEXT NOT NULL,
+      refresh_token TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS account_names (
@@ -110,6 +120,7 @@ export function replaceAllData(payload) {
     insertRows('settings', payload.settings);
     insertRows('users', payload.users);
     insertRows('accounts', payload.accounts);
+    insertRows('mailboxes', payload.mailboxes);
     insertRows('account_names', payload.account_names);
     insertRows('bookings', payload.bookings);
     insertRows('audit_logs', payload.audit_logs);

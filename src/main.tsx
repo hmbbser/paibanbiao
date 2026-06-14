@@ -13,6 +13,7 @@ import {
   FileClock,
   KeyRound,
   LogOut,
+  Mail,
   Menu,
   Plus,
   RefreshCw,
@@ -32,6 +33,8 @@ type User = { id: string; username: string; role: Role; enabled: boolean; create
 type AppSettings = { siteName: string; timezone: string; defaultView: string; exportVersion?: string; auditRetentionDays?: string; auditRetentionCustomDays?: string; accountCopyFields?: string; nameScrollSeconds?: string; toastDurationSeconds?: string };
 type Account = { id: string; name: string; login: string; password: string; remark: string; status: string; created_at: string };
 type AccountName = { id: string; name: string; created_at: string };
+type Mailbox = { id: string; email: string; password: string; client_id: string; refresh_token: string; created_at: string; updated_at: string };
+type MailCodeResult = { code: string; email: string; recipient?: string; mailbox?: string; subject?: string; sender?: string; receivedAt?: string };
 type BookingStatus = 'reserved' | 'active' | 'completed' | 'ended_early' | 'cancelled';
 type Booking = {
   id: string;
@@ -75,6 +78,7 @@ type NavItem = {
 const navItems: NavItem[] = [
   { id: 'timeline', label: '时间线', icon: CalendarDays },
   { id: 'accounts', label: '账号', icon: KeyRound },
+  { id: 'mailboxes', label: '邮箱', icon: Mail, admin: true },
   { id: 'users', label: '用户', icon: Users, admin: true },
   { id: 'records', label: '记录', icon: FileClock },
   { id: 'backup', label: '备份', icon: DatabaseBackup, admin: true },
@@ -114,6 +118,7 @@ async function copyTextToClipboard(text: string) {
 type MockState = Overview & {
   settings: AppSettings;
   accountNames: AccountName[];
+  mailboxes: Mailbox[];
   auditLogs: AuditLog[];
   sessionUserId: string;
   switchRootUserId?: string;
@@ -155,15 +160,27 @@ function createMockState(): MockState {
   const admin: User = { id: 'u-admin', username: 'admin', role: 'admin', enabled: true, created_at: mockNow(-72) };
   const staff: User = { id: 'u-staff', username: 'xiaomei', role: 'user', enabled: true, created_at: mockNow(-48) };
   const accounts: Account[] = [
-    { id: 'a-1', name: 'A账号', login: 'A123456', password: 'aA123456', remark: '主力账号', status: 'active', created_at: mockNow(-60) },
+    { id: 'a-1', name: 'A账号', login: 'A123456', password: 'aA123456', remark: '主力账号 demo@example.com', status: 'active', created_at: mockNow(-60) },
     { id: 'a-2', name: 'B账号', login: 'B234567', password: 'bB234567', remark: '备用账号', status: 'active', created_at: mockNow(-50) },
     { id: 'a-3', name: 'C账号', login: 'C345678', password: 'cC345678', remark: '游戏账号', status: 'active', created_at: mockNow(-40) },
     { id: 'a-4', name: 'D账号', login: 'D456789', password: 'dD456789', remark: '测试账号', status: 'active', created_at: mockNow(-30) }
   ];
+  const mailboxes: Mailbox[] = [
+    {
+      id: 'm-1',
+      email: 'demo@example.com',
+      password: 'demo-password',
+      client_id: 'demo-client-id',
+      refresh_token: 'demo-refresh-token',
+      created_at: mockNow(-20),
+      updated_at: mockNow(-20)
+    }
+  ];
   return {
-    settings: { ...defaultSettings, siteName: '账号出租管理系统', exportVersion: '0.2.3', auditRetentionDays: '7' },
+    settings: { ...defaultSettings, siteName: '账号出租管理系统', exportVersion: '0.2.4', auditRetentionDays: '7' },
     users: [admin, staff],
     accounts,
+    mailboxes,
     accountNames: uniqueNames(accounts.map((account) => account.name)).map((name, index) => ({
       id: `name-${index + 1}`,
       name,
@@ -205,6 +222,10 @@ function uniqueNames(names: string[]) {
 }
 
 function normalizeMockState(state: MockState) {
+  if (!Array.isArray(state.mailboxes)) {
+    state.mailboxes = [];
+    saveMockState(state);
+  }
   if (!Array.isArray(state.accountNames)) {
     state.accountNames = uniqueNames(state.accounts.map((account) => account.name)).map((name, index) => ({
       id: `name-${index + 1}`,
@@ -265,6 +286,47 @@ function enrichBookings(state: MockState) {
 function readBody<T>(options: RequestInit): T {
   if (!options.body || options.body instanceof FormData) return {} as T;
   return JSON.parse(String(options.body)) as T;
+}
+
+const emailRegex = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
+
+function normalizeEmailText(value: string) {
+  return value.trim().toLowerCase();
+}
+
+function extractEmailFromText(value: string) {
+  const match = value.match(emailRegex);
+  return match ? normalizeEmailText(match[0]) : '';
+}
+
+function parseMailboxImportText(content: string, delimiter = '') {
+  const rows = content.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const valid: Omit<Mailbox, 'id' | 'created_at' | 'updated_at'>[] = [];
+  const invalid: { line: number; reason: string }[] = [];
+  const delimiters = delimiter.trim() ? [delimiter.trim()] : ['----', '|', '\t', ',', ';', ' '];
+  rows.forEach((line, index) => {
+    let parsed: Omit<Mailbox, 'id' | 'created_at' | 'updated_at'> | null = null;
+    for (const item of delimiters) {
+      const parts = line.split(item).map((part) => part.trim()).filter(Boolean);
+      if (parts.length < 4 || !emailRegex.test(parts[0])) continue;
+      parsed = {
+        email: normalizeEmailText(parts[0]),
+        password: parts[1] || '',
+        client_id: parts[2] || '',
+        refresh_token: parts.slice(3).join(item).trim()
+      };
+      break;
+    }
+    if (!parsed || !parsed.email || !parsed.client_id || !parsed.refresh_token) invalid.push({ line: index + 1, reason: '格式不正确' });
+    else valid.push(parsed);
+  });
+  return { total: rows.length, valid, invalid };
+}
+
+function maskSecret(value: string, start = 6, end = 4) {
+  if (!value) return '-';
+  if (value.length <= start + end) return '*'.repeat(value.length);
+  return `${value.slice(0, start)}...${value.slice(-end)}`;
 }
 
 function isBlockingBooking(status?: BookingStatus) {
@@ -381,7 +443,7 @@ async function mockApi<T>(url: string, options: RequestInit = {}): Promise<T> {
     saveMockState(state);
     return ok({ settings: state.settings });
   }
-  if (url === '/api/admin/version') return ok({ current: '0.2.3-local', latest: '0.2.3-local', hasUpdate: false, repo: 'hmbbser/paibanbiao', branch: 'main' });
+  if (url === '/api/admin/version') return ok({ current: '0.2.4-local', latest: '0.2.4-local', hasUpdate: false, repo: 'hmbbser/paibanbiao', branch: 'main' });
   if (url === '/api/admin/update' && method === 'POST') return ok({ message: '本地 UI 模式不执行真实更新' });
   if (url === '/api/admin/import' && method === 'POST') {
     if (options.body instanceof FormData) {
@@ -395,6 +457,7 @@ async function mockApi<T>(url: string, options: RequestInit = {}): Promise<T> {
         const importedUsers = imported.users;
         const importedAccounts = imported.accounts;
         const importedBookings = imported.bookings;
+        const importedMailboxes = imported.mailboxes || [];
         const importedAccountNames = imported.accountNames || uniqueNames(importedAccounts.map((account) => account.name)).map((name, index) => ({
           id: `name-${index + 1}`,
           name,
@@ -404,6 +467,7 @@ async function mockApi<T>(url: string, options: RequestInit = {}): Promise<T> {
           settings: { ...defaultSettings, ...imported.settings },
           users: importedUsers,
           accounts: importedAccounts,
+          mailboxes: importedMailboxes,
           accountNames: importedAccountNames,
           bookings: importedBookings,
           auditLogs: imported.auditLogs || [],
@@ -413,6 +477,90 @@ async function mockApi<T>(url: string, options: RequestInit = {}): Promise<T> {
       }
     }
     return ok({ recovery: 'local-ui-recovery' });
+  }
+
+  if (url === '/api/mailboxes' && method === 'GET') return ok(state.mailboxes);
+  if (url === '/api/mailboxes' && method === 'POST') {
+    const body = readBody<Partial<Mailbox>>(options);
+    const email = normalizeEmailText(body.email || '');
+    if (!email || !body.client_id || !body.refresh_token) return fail('请填写邮箱、Client ID 和 Refresh Token');
+    if (state.mailboxes.some((item) => item.email === email)) return fail('这个邮箱已经存在');
+    const item: Mailbox = {
+      id: crypto.randomUUID(),
+      email,
+      password: body.password || '',
+      client_id: body.client_id,
+      refresh_token: body.refresh_token,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+    state.mailboxes.unshift(item);
+    addMockAudit(state, sessionUser, 'create', 'mailbox', `新增邮箱 ${email}`);
+    saveMockState(state);
+    return ok(item);
+  }
+  if (url === '/api/mailboxes/import' && method === 'POST') {
+    const body = readBody<{ content: string; delimiter?: string }>(options);
+    const parsed = parseMailboxImportText(body.content || '', body.delimiter || '');
+    let created = 0;
+    let updated = 0;
+    parsed.valid.forEach((item) => {
+      const existingIndex = state.mailboxes.findIndex((mailbox) => mailbox.email === item.email);
+      if (existingIndex >= 0) {
+        state.mailboxes[existingIndex] = { ...state.mailboxes[existingIndex], ...item, updated_at: new Date().toISOString() };
+        updated += 1;
+      } else {
+        state.mailboxes.unshift({ ...item, id: crypto.randomUUID(), created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
+        created += 1;
+      }
+    });
+    addMockAudit(state, sessionUser, 'import', 'mailbox', `导入邮箱：新增 ${created}，更新 ${updated}，失败 ${parsed.invalid.length}`);
+    saveMockState(state);
+    return ok({ total: parsed.total, created, updated, failed: parsed.invalid.length, invalid: parsed.invalid });
+  }
+
+  const mailCodeMatch = url.match(/^\/api\/accounts\/([^/]+)\/mail-code$/);
+  if (mailCodeMatch && method === 'POST') {
+    const account = state.accounts.find((item) => item.id === mailCodeMatch[1]);
+    const email = extractEmailFromText(account?.remark || '');
+    if (!account || !email || !state.mailboxes.some((mailbox) => mailbox.email === email)) return fail('未找到邮箱，请联系管理员');
+    const codeChars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    const mockCode = Array.from({ length: 5 }, () => codeChars[Math.floor(Math.random() * codeChars.length)]).join('');
+    return ok({
+      code: mockCode,
+      email,
+      recipient: email,
+      mailbox: 'INBOX',
+      subject: 'ご利用のSteamアカウントに新しいWebまたはモバイル機器からのアクセスがありました',
+      sender: 'noreply@steampowered.com',
+      receivedAt: new Date().toISOString()
+    });
+  }
+
+  const mailboxMatch = url.match(/^\/api\/mailboxes\/(.+)$/);
+  if (mailboxMatch && method === 'PUT') {
+    const body = readBody<Partial<Mailbox>>(options);
+    const email = normalizeEmailText(body.email || '');
+    if (!email || !body.client_id || !body.refresh_token) return fail('请填写邮箱、Client ID 和 Refresh Token');
+    if (state.mailboxes.some((item) => item.id !== mailboxMatch[1] && item.email === email)) return fail('这个邮箱已经存在');
+    state.mailboxes = state.mailboxes.map((item) => item.id === mailboxMatch[1] ? {
+      ...item,
+      email,
+      password: body.password || '',
+      client_id: body.client_id || '',
+      refresh_token: body.refresh_token || '',
+      updated_at: new Date().toISOString()
+    } : item);
+    addMockAudit(state, sessionUser, 'update', 'mailbox', `修改邮箱 ${email}`);
+    saveMockState(state);
+    return ok(state.mailboxes.find((item) => item.id === mailboxMatch[1]));
+  }
+  if (mailboxMatch && method === 'DELETE') {
+    const old = state.mailboxes.find((item) => item.id === mailboxMatch[1]);
+    state.mailboxes = state.mailboxes.filter((item) => item.id !== mailboxMatch[1]);
+    addMockAudit(state, sessionUser, 'delete', 'mailbox', `删除邮箱 ${old?.email || mailboxMatch[1]}`);
+    saveMockState(state);
+    return ok({ success: true });
   }
 
   const accountMatch = url.match(/^\/api\/accounts\/(.+)$/);
@@ -891,6 +1039,7 @@ function Dashboard({
               />
             )}
           {active === 'accounts' && <AccountsPanel user={user} settings={settings} accounts={overview.accounts} refresh={refresh} />}
+          {active === 'mailboxes' && user.role === 'admin' && <MailboxesPanel />}
           {active === 'users' && user.role === 'admin' && <UsersPanel users={overview.users} refresh={refresh} />}
           {active === 'records' && (
             <RecordsPanel
@@ -1056,6 +1205,7 @@ function Timeline({
     reserved: activeBookings.filter((booking) => booking.status === 'reserved').length
   };
   const accountRailActive = accountRailEnabled && !accountRailOpen;
+  const nowLineEdgeClass = currentLeft > 88 ? 'near-right' : currentLeft < 12 ? 'near-left' : '';
 
   useEffect(() => {
     const media = window.matchMedia('(max-width: 640px) and (pointer: coarse)');
@@ -1243,8 +1393,8 @@ function Timeline({
               <div className="timeline-row" style={{ minHeight: rowHeight }}>
                 {Array.from({ length: 24 }, (_, index) => <span className="hour-cell" style={{ minHeight: rowHeight }} key={index} />)}
                 {isSelectedToday && currentLeft >= 0 && currentLeft <= 100 && (
-                  <div className={accountIndex === 0 ? 'now-line show-label' : 'now-line'} style={{ left: `${currentLeft}%` }}>
-                    {accountIndex === 0 && <span>{formatTime(new Date().toISOString())}</span>}
+                  <div className={`${accountIndex === 0 ? 'now-line show-label' : 'now-line'} ${nowLineEdgeClass}`} style={{ left: `${currentLeft}%` }}>
+                    {accountIndex === 0 && <span>现在 {formatClock(new Date().toISOString())}</span>}
                   </div>
                 )}
                 {rowBookings.length === 0 && (
@@ -1258,19 +1408,22 @@ function Timeline({
                   const visibleEnd = minDate(new Date(booking.ends_at), end);
                   const left = percentBetween(visibleStart, start, end);
                   const right = percentBetween(visibleEnd, start, end);
+                  const widthPercent = Math.max(right - left, 4);
+                  const compactClass = widthPercent < 7 ? 'is-compact' : '';
+                  const microClass = widthPercent < 4.1 ? 'is-micro' : '';
                   const crossesDay = new Date(booking.starts_at) < start || new Date(booking.ends_at) > end;
                   const hasConflict = conflictIds.has(booking.id);
                   return (
                     <button
-                      className={`booking-bar ${booking.status} ${ownerClass(booking)} ${crossesDay ? 'cross-day' : ''} ${hasConflict ? 'has-conflict' : ''}`}
+                      className={`booking-bar ${booking.status} ${ownerClass(booking)} ${compactClass} ${microClass} ${crossesDay ? 'cross-day' : ''} ${hasConflict ? 'has-conflict' : ''}`}
                       key={booking.id}
-                      style={{ left: `${left}%`, width: `${Math.max(right - left, 4)}%`, top: `${20 + (rowLanes.byId.get(booking.id) || 0) * 72}px` }}
+                      style={{ left: `${left}%`, width: `${widthPercent}%`, top: `${20 + (rowLanes.byId.get(booking.id) || 0) * 72}px` }}
                       title={`租客：${booking.renter_name}\n联系方式：${booking.renter_contact || '-'}\n账号：${booking.account_name || '-'}\n时间：${formatDateTime(booking.starts_at)} - ${formatDateTime(booking.ends_at)}\n状态：${hasConflict ? '冲突 · ' : ''}${statusText[booking.status]}\n操作人：${booking.operator_name || '-'}`}
                       onClick={() => (user.role === 'admin' || booking.operator_id === user.id) && onEdit(booking)}
                     >
                       <strong>{booking.renter_name}</strong>
                       <span>{booking.renter_contact}</span>
-                      <small>{formatTime(visibleStart.toISOString())} - {formatTime(visibleEnd.toISOString())}{crossesDay ? ' · 跨天' : ''} · {hasConflict ? '冲突' : statusText[booking.status]}</small>
+                      <small>{formatTimelineRange(visibleStart, visibleEnd, start, end)}{crossesDay ? ' · 跨天' : ''} · {hasConflict ? '冲突' : statusText[booking.status]}</small>
                     </button>
                   );
                 })}
@@ -1785,14 +1938,18 @@ function BookingDetailModal({
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [copyToast, setCopyToast] = useState('');
+  const [toastTone, setToastTone] = useState<'success' | 'danger' | 'info'>('success');
+  const [mailCode, setMailCode] = useState<MailCodeResult | null>(null);
+  const [mailCodeLoading, setMailCodeLoading] = useState(false);
   const copyToastTimer = useRef<number | null>(null);
 
   useEffect(() => () => {
     if (copyToastTimer.current) window.clearTimeout(copyToastTimer.current);
   }, []);
 
-  function showCopyToast(message: string) {
+  function showCopyToast(message: string, tone: 'success' | 'danger' | 'info' = 'success') {
     if (copyToastTimer.current) window.clearTimeout(copyToastTimer.current);
+    setToastTone(tone);
     setCopyToast(message);
     copyToastTimer.current = window.setTimeout(() => setCopyToast(''), getToastDurationMs(settings));
   }
@@ -1818,6 +1975,20 @@ function BookingDetailModal({
     showCopyToast('复制成功');
   }
 
+  async function fetchLoginCode() {
+    setMailCodeLoading(true);
+    try {
+      const result = await api<MailCodeResult>(`/api/accounts/${booking.account_id}/mail-code`, { method: 'POST' });
+      setMailCode(result);
+      await copyTextToClipboard(result.code);
+      showCopyToast('验证码已复制');
+    } catch (error) {
+      showCopyToast((error as Error).message, 'danger');
+    } finally {
+      setMailCodeLoading(false);
+    }
+  }
+
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <section className="admin-modal compact detail-modal" onClick={(event) => event.stopPropagation()}>
@@ -1838,13 +2009,14 @@ function BookingDetailModal({
           <DetailItem label="操作人" value={booking.operator_name || '-'} onCopy={copyField} />
           <DetailItem label="备注" value={booking.remark || '-'} onCopy={copyField} />
         </div>
-        <div className={`modal-actions detail-actions account-detail-actions ${canEdit ? '' : 'single-action'}`}>
+        <div className="modal-actions detail-actions account-detail-actions">
+          <button className={`soft-btn login-code-action ${mailCode ? 'has-code' : ''}`} onClick={fetchLoginCode} disabled={mailCodeLoading}><Mail size={16} />{mailCodeLoading ? '获取中...' : (mailCode?.code || '获取登陆验证码')}</button>
           <button className="soft-btn" onClick={copyBooking}><Copy size={16} />复制</button>
           {canEdit && <button className="primary" onClick={onEdit}>编辑出租</button>}
           {canEdit && <button className="danger-btn" onClick={() => setDeleteOpen(true)}><Trash2 size={16} />删除</button>}
         </div>
       </section>
-      <NoticeToast message={copyToast} tone="success" />
+      <NoticeToast message={copyToast} tone={toastTone} />
       {deleteOpen && (
         <ConfirmModal
           title="确认删除出租"
@@ -1990,14 +2162,18 @@ function AccountDetailModal({
   const [deleting, setDeleting] = useState(false);
   const [statusChanging, setStatusChanging] = useState(false);
   const [copyToast, setCopyToast] = useState('');
+  const [toastTone, setToastTone] = useState<'success' | 'danger' | 'info'>('success');
+  const [mailCode, setMailCode] = useState<MailCodeResult | null>(null);
+  const [mailCodeLoading, setMailCodeLoading] = useState(false);
   const copyToastTimer = useRef<number | null>(null);
 
   useEffect(() => () => {
     if (copyToastTimer.current) window.clearTimeout(copyToastTimer.current);
   }, []);
 
-  function showCopyToast(message: string) {
+  function showCopyToast(message: string, tone: 'success' | 'danger' | 'info' = 'success') {
     if (copyToastTimer.current) window.clearTimeout(copyToastTimer.current);
+    setToastTone(tone);
     setCopyToast(message);
     copyToastTimer.current = window.setTimeout(() => setCopyToast(''), getToastDurationMs(settings));
   }
@@ -2022,6 +2198,20 @@ function AccountDetailModal({
   async function copyField(value: string) {
     await copyTextToClipboard(value);
     showCopyToast('复制成功');
+  }
+
+  async function fetchLoginCode() {
+    setMailCodeLoading(true);
+    try {
+      const result = await api<MailCodeResult>(`/api/accounts/${account.id}/mail-code`, { method: 'POST' });
+      setMailCode(result);
+      await copyTextToClipboard(result.code);
+      showCopyToast('验证码已复制');
+    } catch (error) {
+      showCopyToast((error as Error).message, 'danger');
+    } finally {
+      setMailCodeLoading(false);
+    }
   }
 
   async function toggleAccountStatus() {
@@ -2074,12 +2264,13 @@ function AccountDetailModal({
           <DetailItem label="创建时间" value={formatDateTime(account.created_at)} onCopy={copyField} />
         </div>
         <div className="modal-actions detail-actions account-detail-actions">
+          <button className={`soft-btn login-code-action ${mailCode ? 'has-code' : ''}`} onClick={fetchLoginCode} disabled={mailCodeLoading}><Mail size={16} />{mailCodeLoading ? '获取中...' : (mailCode?.code || '获取登陆验证码')}</button>
           <button className="soft-btn" onClick={copyAccount}><Copy size={16} />复制</button>
           {onEdit && <button className="primary" onClick={onEdit}>{'\u7f16\u8f91\u8d26\u53f7'}</button>}
           {onDeleted && <button className="danger-btn" onClick={() => setDeleteOpen(true)}><Trash2 size={16} />{'\u5220\u9664'}</button>}
         </div>
       </section>
-      <NoticeToast message={copyToast} tone="success" />
+      <NoticeToast message={copyToast} tone={toastTone} />
       {deleteOpen && (
         <ConfirmModal
           title="确认删除账号"
@@ -2107,6 +2298,33 @@ function DetailItem({ label, value, onCopy }: { label: string; value: string; on
     <button type="button" className="detail-item detail-copy-item" onClick={() => onCopy(value)} title={`复制${label}`}>
       {content}
     </button>
+  );
+}
+
+function MailCodeModal({ result, onClose, onCopy }: { result: MailCodeResult; onClose: () => void; onCopy: () => void | Promise<void> }) {
+  return (
+    <div className="modal-backdrop" onClick={(event) => { event.stopPropagation(); onClose(); }}>
+      <section className="admin-modal compact mail-code-modal" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-title">
+          <div>
+            <span>登陆验证码</span>
+            <h2>{result.code}</h2>
+          </div>
+          <button className="icon-btn" onClick={onClose}><X size={18} /></button>
+        </div>
+        <div className="mail-code-details">
+          <DetailItem label="邮箱" value={result.email || '-'} />
+          <DetailItem label="邮箱夹" value={result.mailbox || '-'} />
+          <DetailItem label="发件人" value={result.sender || '-'} />
+          <DetailItem label="时间" value={result.receivedAt ? formatDateTime(result.receivedAt) : '-'} />
+          <DetailItem label="主题" value={result.subject || '-'} />
+        </div>
+        <div className="modal-actions confirm-actions">
+          <button type="button" className="soft-btn" onClick={onClose}>关闭</button>
+          <button type="button" className="primary" onClick={onCopy}><Copy size={16} />复制验证码</button>
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -2342,6 +2560,247 @@ function PaginationControls({
   );
 }
 
+function MailboxesPanel() {
+  const [mailboxes, setMailboxes] = useState<Mailbox[]>([]);
+  const [search, setSearch] = useState('');
+  const [modal, setModal] = useState<Mailbox | 'new' | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
+  const [message, setMessage] = useState('');
+  const [messageTone, setMessageTone] = useState<'success' | 'danger' | 'info'>('success');
+  const searchTerm = search.trim().toLowerCase();
+  const visibleMailboxes = mailboxes.filter((mailbox) => {
+    if (!searchTerm) return true;
+    return `${mailbox.email} ${mailbox.client_id} ${mailbox.password}`.toLowerCase().includes(searchTerm);
+  });
+
+  useEffect(() => {
+    loadMailboxes();
+  }, []);
+
+  useEffect(() => {
+    if (!message) return;
+    const timer = window.setTimeout(() => setMessage(''), 1800);
+    return () => window.clearTimeout(timer);
+  }, [message]);
+
+  async function loadMailboxes() {
+    try {
+      setMailboxes(await api<Mailbox[]>('/api/mailboxes'));
+    } catch (error) {
+      setMessageTone('danger');
+      setMessage((error as Error).message);
+    }
+  }
+
+  function showMessage(text: string, tone: 'success' | 'danger' | 'info' = 'success') {
+    setMessageTone(tone);
+    setMessage(text);
+  }
+
+  return (
+    <Panel
+      title="邮箱管理"
+      subtitle="维护微软邮箱 API 凭证，用于按账号备注邮箱获取登陆验证码"
+      action={<button className="primary" onClick={() => setModal('new')}><Plus size={16} />添加邮箱</button>}
+    >
+      <div className="admin-toolbar mailbox-toolbar">
+        <button className="soft-btn refresh-action" onClick={loadMailboxes}><RefreshCw size={16} />刷新</button>
+        <div className="searchbox table-search">
+          <Search size={16} />
+          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索邮箱..." />
+        </div>
+        <button className="soft-btn" onClick={() => setImportOpen(true)}><Upload size={16} />批量导入</button>
+      </div>
+
+      <div className="admin-table mailbox-table">
+        <div className="admin-table-head mailbox-table-grid">
+          <span>邮箱</span>
+          <span>密码</span>
+          <span>Client ID</span>
+          <span>Refresh Token</span>
+          <span>更新时间</span>
+          <span>操作</span>
+        </div>
+        {visibleMailboxes.map((mailbox) => (
+          <div className="admin-table-row mailbox-table-grid" key={mailbox.id}>
+            <span className="mailbox-email">{mailbox.email}</span>
+            <span>{maskSecret(mailbox.password, 3, 2)}</span>
+            <span className="mono-value">{maskSecret(mailbox.client_id, 8, 6)}</span>
+            <span className="mono-value token-preview">{maskSecret(mailbox.refresh_token, 10, 6)}</span>
+            <span>{formatDateTime(mailbox.updated_at || mailbox.created_at)}</span>
+            <div className="row-actions">
+              <button className="ghost-action" onClick={() => setModal(mailbox)}>编辑</button>
+              <DeleteButton
+                url={`/api/mailboxes/${mailbox.id}`}
+                refresh={loadMailboxes}
+                body={`确定删除邮箱 ${mailbox.email} 吗？`}
+              />
+            </div>
+          </div>
+        ))}
+        {visibleMailboxes.length === 0 && <div className="empty-table">{mailboxes.length === 0 ? '还没有邮箱，点击右上角“添加邮箱”或批量导入。' : '没有匹配的邮箱。'}</div>}
+      </div>
+
+      <NoticeToast message={message} tone={messageTone} />
+      {modal && (
+        <MailboxModal
+          mailbox={modal === 'new' ? null : modal}
+          onClose={() => setModal(null)}
+          onSaved={async () => {
+            setModal(null);
+            await loadMailboxes();
+            showMessage('保存成功');
+          }}
+          onError={(error) => showMessage(error, 'danger')}
+        />
+      )}
+      {importOpen && (
+        <MailboxImportModal
+          onClose={() => setImportOpen(false)}
+          onImported={async (summary) => {
+            await loadMailboxes();
+            setImportOpen(false);
+            showMessage(`导入完成：新增 ${summary.created}，更新 ${summary.updated}，失败 ${summary.failed}`, summary.failed ? 'info' : 'success');
+          }}
+          onError={(error) => showMessage(error, 'danger')}
+        />
+      )}
+    </Panel>
+  );
+}
+
+function MailboxModal({
+  mailbox,
+  onClose,
+  onSaved,
+  onError
+}: {
+  mailbox: Mailbox | null;
+  onClose: () => void;
+  onSaved: () => void | Promise<void>;
+  onError: (message: string) => void;
+}) {
+  const [form, setForm] = useState({
+    email: mailbox?.email || '',
+    password: mailbox?.password || '',
+    client_id: mailbox?.client_id || '',
+    refresh_token: mailbox?.refresh_token || ''
+  });
+  const [saving, setSaving] = useState(false);
+
+  async function save(event: React.FormEvent) {
+    event.preventDefault();
+    setSaving(true);
+    try {
+      await api<Mailbox>(mailbox ? `/api/mailboxes/${mailbox.id}` : '/api/mailboxes', {
+        method: mailbox ? 'PUT' : 'POST',
+        body: JSON.stringify(form)
+      });
+      await onSaved();
+    } catch (error) {
+      onError((error as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <section className="admin-modal compact mailbox-modal" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-title">
+          <div>
+            <span>邮箱配置</span>
+            <h2>{mailbox ? '编辑邮箱' : '添加邮箱'}</h2>
+          </div>
+          <button className="icon-btn" onClick={onClose} disabled={saving}><X size={18} /></button>
+        </div>
+        <form className="modal-form" onSubmit={save}>
+          <Field label="邮箱" value={form.email} onChange={(email) => setForm({ ...form, email })} required />
+          <Field label="密码" value={form.password} onChange={(password) => setForm({ ...form, password })} />
+          <Field label="Client ID" value={form.client_id} onChange={(client_id) => setForm({ ...form, client_id })} required />
+          <label>
+            <span>Refresh Token</span>
+            <textarea required value={form.refresh_token} onChange={(event) => setForm({ ...form, refresh_token: event.target.value })} />
+          </label>
+          <div className="modal-actions">
+            <button type="button" className="soft-btn" onClick={onClose} disabled={saving}>取消</button>
+            <button className="primary" disabled={saving}>{saving ? '保存中...' : '保存'}</button>
+          </div>
+        </form>
+      </section>
+    </div>
+  );
+}
+
+function MailboxImportModal({
+  onClose,
+  onImported,
+  onError
+}: {
+  onClose: () => void;
+  onImported: (summary: { created: number; updated: number; failed: number }) => void | Promise<void>;
+  onError: (message: string) => void;
+}) {
+  const [delimiter, setDelimiter] = useState('');
+  const [content, setContent] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [summary, setSummary] = useState<{ total: number; created: number; updated: number; failed: number; invalid?: { line: number; reason: string }[] } | null>(null);
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setLoading(true);
+    try {
+      const result = await api<{ total: number; created: number; updated: number; failed: number; invalid?: { line: number; reason: string }[] }>('/api/mailboxes/import', {
+        method: 'POST',
+        body: JSON.stringify({ content, delimiter })
+      });
+      setSummary(result);
+      await onImported(result);
+    } catch (error) {
+      onError((error as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <section className="admin-modal compact mailbox-import-modal" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-title">
+          <div>
+            <span>批量导入</span>
+            <h2>导入微软邮箱</h2>
+          </div>
+          <button className="icon-btn" onClick={onClose} disabled={loading}><X size={18} /></button>
+        </div>
+        <form className="modal-form" onSubmit={submit}>
+          <Field label="分隔符" value={delimiter} onChange={setDelimiter} />
+          <label>
+            <span>邮箱数据</span>
+            <textarea
+              className="mailbox-import-textarea"
+              value={content}
+              onChange={(event) => setContent(event.target.value)}
+              placeholder="邮箱----密码----Client ID----Refresh Token"
+              required
+            />
+          </label>
+          {summary && (
+            <div className="mailbox-import-result">
+              <strong>{`共 ${summary.total} 行，新增 ${summary.created}，更新 ${summary.updated}，失败 ${summary.failed}`}</strong>
+              {summary.invalid?.slice(0, 5).map((item) => <span key={item.line}>{`第 ${item.line} 行：${item.reason}`}</span>)}
+            </div>
+          )}
+          <div className="modal-actions">
+            <button type="button" className="soft-btn" onClick={onClose} disabled={loading}>取消</button>
+            <button className="primary" disabled={loading}>{loading ? '导入中...' : '导入'}</button>
+          </div>
+        </form>
+      </section>
+    </div>
+  );
+}
+
 function AccountsPanel({ user, settings, accounts, refresh }: { user: User; settings: AppSettings; accounts: Account[]; refresh: () => void }) {
   const [modal, setModal] = useState<Account | 'new' | null>(null);
   const [nameManagerOpen, setNameManagerOpen] = useState(false);
@@ -2351,7 +2810,10 @@ function AccountsPanel({ user, settings, accounts, refresh }: { user: User; sett
   const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [toggleLoadingId, setToggleLoadingId] = useState('');
+  const [mailCodeLoadingId, setMailCodeLoadingId] = useState('');
+  const [mailCodes, setMailCodes] = useState<Record<string, MailCodeResult>>({});
   const [copyToast, setCopyToast] = useState('');
+  const [toastTone, setToastTone] = useState<'success' | 'danger' | 'info'>('success');
   const copyToastTimer = useRef<number | null>(null);
   const [nameFilter, setNameFilter] = useState<string[]>([]);
   const [statusQuickFilter, setStatusQuickFilter] = useState<'all' | 'active' | 'disabled'>(() => {
@@ -2398,8 +2860,9 @@ function AccountsPanel({ user, settings, accounts, refresh }: { user: User; sett
     if (copyToastTimer.current) window.clearTimeout(copyToastTimer.current);
   }, []);
 
-  function showCopyToast(message: string) {
+  function showCopyToast(message: string, tone: 'success' | 'danger' | 'info' = 'success') {
     if (copyToastTimer.current) window.clearTimeout(copyToastTimer.current);
+    setToastTone(tone);
     setCopyToast(message);
     copyToastTimer.current = window.setTimeout(() => setCopyToast(''), getToastDurationMs(settings));
   }
@@ -2477,6 +2940,20 @@ function AccountsPanel({ user, settings, accounts, refresh }: { user: User; sett
     }
     await copyTextToClipboard(value);
     showCopyToast('复制成功');
+  }
+
+  async function fetchLoginCode(account: Account) {
+    setMailCodeLoadingId(account.id);
+    try {
+      const result = await api<MailCodeResult>(`/api/accounts/${account.id}/mail-code`, { method: 'POST' });
+      setMailCodes((current) => ({ ...current, [account.id]: result }));
+      await copyTextToClipboard(result.code);
+      showCopyToast('验证码已复制');
+    } catch (error) {
+      showCopyToast((error as Error).message, 'danger');
+    } finally {
+      setMailCodeLoadingId('');
+    }
   }
 
   const CopyValue = ({ account, value, className = '' }: { account: Account; value: string; className?: string }) => (
@@ -2558,6 +3035,16 @@ function AccountsPanel({ user, settings, accounts, refresh }: { user: User; sett
             <CopyValue account={account} value={account.remark || '-'} />
             <span>{formatDateTime(account.created_at)}</span>
             <div className="row-actions account-row-actions">
+              <button
+                type="button"
+                className={`ghost-action login-code-action ${mailCodes[account.id] ? 'has-code' : ''}`}
+                onClick={() => fetchLoginCode(account)}
+                disabled={mailCodeLoadingId === account.id}
+                title="获取登陆验证码"
+              >
+                <Mail size={14} />
+                {mailCodeLoadingId === account.id ? '获取中...' : (mailCodes[account.id]?.code || '登陆验证码')}
+              </button>
               <button className="ghost-action copy-action" onClick={() => copyAccount(account)}><Copy size={14} />复制</button>
               {user.role === 'admin' && (
                 <>
@@ -2621,6 +3108,16 @@ function AccountsPanel({ user, settings, accounts, refresh }: { user: User; sett
                 </div>
               )}
               <div className="row-actions account-row-actions">
+                <button
+                  type="button"
+                  className={`ghost-action login-code-action ${mailCodes[account.id] ? 'has-code' : ''}`}
+                  onClick={() => fetchLoginCode(account)}
+                  disabled={mailCodeLoadingId === account.id}
+                  title="获取登陆验证码"
+                >
+                  <Mail size={14} />
+                  {mailCodeLoadingId === account.id ? '获取中...' : (mailCodes[account.id]?.code || '登陆验证码')}
+                </button>
                 <button className="ghost-action copy-action" onClick={() => copyAccount(account)}><Copy size={14} />{'\u590d\u5236'}</button>
                 {user.role === 'admin' && (
                   <>
@@ -2646,7 +3143,7 @@ function AccountsPanel({ user, settings, accounts, refresh }: { user: User; sett
         {visibleAccounts.length === 0 && <div className="empty-table">{accounts.length === 0 ? '\u8fd8\u6ca1\u6709\u8d26\u53f7\u3002' : '\u6ca1\u6709\u5339\u914d\u7684\u8d26\u53f7\u3002'}</div>}
       </div>
       <PaginationControls total={visibleAccounts.length} page={pagedAccounts.safePage} pageSize={pageSize} onPage={setPage} onPageSize={setPageSize} />
-       <NoticeToast message={copyToast} tone={copyToast === '复制成功' ? 'success' : 'danger'} />
+      <NoticeToast message={copyToast} tone={toastTone} />
       {modal && (
         <AccountModal
           account={modal === 'new' ? null : modal}
@@ -3702,7 +4199,7 @@ function DeleteButton({ url, refresh, label = '删除', title = '确认删除', 
 }
 
 function MobileTabs({ active, setActive, isAdmin }: { active: string; setActive: (id: string) => void; isAdmin: boolean }) {
-  const items = navItems.filter((item) => ['timeline', 'accounts', 'records'].includes(item.id) || (isAdmin && ['backup', 'settings'].includes(item.id)));
+  const items = navItems.filter((item) => ['timeline', 'accounts', 'records'].includes(item.id) || (isAdmin && ['mailboxes', 'backup', 'settings'].includes(item.id)));
   return (
     <nav className="mobile-tabs" style={{ '--mobile-tab-count': items.slice(0, 5).length } as React.CSSProperties}>
       {items.slice(0, 5).map((item) => {
@@ -3919,6 +4416,17 @@ function durationHours(start: string, end: string) {
 
 function formatTime(value: string) {
   return new Date(value).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
+function formatClock(value: string | Date) {
+  const date = value instanceof Date ? value : new Date(value);
+  return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
+function formatTimelineRange(visibleStart: Date, visibleEnd: Date, dayStart: Date, dayEnd: Date) {
+  const startLabel = visibleStart.getTime() <= dayStart.getTime() ? '00:00' : formatClock(visibleStart);
+  const endLabel = visibleEnd.getTime() >= dayEnd.getTime() ? '24:00' : formatClock(visibleEnd);
+  return `${startLabel} - ${endLabel}`;
 }
 
 function formatDateTime(value: string) {

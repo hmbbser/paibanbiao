@@ -130,6 +130,450 @@ function accountStatusError(accountId) {
   return null;
 }
 
+const emailPattern = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
+const emailPatternGlobal = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
+const mailboxFolders = [
+  { label: 'INBOX', graph: 'inbox', imap: 'INBOX' },
+  { label: 'Junk', graph: 'junkemail', imap: 'Junk' }
+];
+
+function normalizeEmail(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function extractFirstEmail(value) {
+  const match = String(value || '').match(emailPattern);
+  return match ? normalizeEmail(match[0]) : '';
+}
+
+function parseMailboxLine(line, delimiter = '') {
+  const raw = String(line || '').trim();
+  if (!raw) return null;
+  const delimiters = delimiter?.trim() ? [delimiter.trim()] : ['----', '|', '\t', ',', ';', ' '];
+  for (const item of delimiters) {
+    const parts = raw.split(item).map((part) => part.trim()).filter(Boolean);
+    if (parts.length < 4 || !emailPattern.test(parts[0])) continue;
+    return {
+      email: normalizeEmail(parts[0]),
+      password: parts[1] || '',
+      client_id: parts[2] || '',
+      refresh_token: parts.slice(3).join(item).trim()
+    };
+  }
+  return null;
+}
+
+function parseMailboxImport(content, delimiter = '') {
+  const rows = String(content || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const valid = [];
+  const invalid = [];
+  for (const [index, line] of rows.entries()) {
+    const item = parseMailboxLine(line, delimiter);
+    if (!item || !item.email || !item.client_id || !item.refresh_token) {
+      invalid.push({ line: index + 1, reason: '格式不正确' });
+      continue;
+    }
+    valid.push(item);
+  }
+  return { valid, invalid, total: rows.length };
+}
+
+function upsertMailbox(item) {
+  const existing = db.prepare('SELECT id FROM mailboxes WHERE email = ?').get(item.email);
+  const timestamp = now();
+  if (existing) {
+    db.prepare('UPDATE mailboxes SET password = ?, client_id = ?, refresh_token = ?, updated_at = ? WHERE email = ?').run(
+      item.password || '',
+      item.client_id,
+      item.refresh_token,
+      timestamp,
+      item.email
+    );
+    return 'updated';
+  }
+  db.prepare('INSERT INTO mailboxes (id, email, password, client_id, refresh_token, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
+    nanoid(),
+    item.email,
+    item.password || '',
+    item.client_id,
+    item.refresh_token,
+    timestamp,
+    timestamp
+  );
+  return 'created';
+}
+
+function stripHtml(value) {
+  return String(value || '')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function stripHtmlLines(value) {
+  return String(value || '')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<\s*br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|li|tr|td|table|h[1-6])>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
+    .replace(/\r/g, '\n')
+    .split('\n')
+    .map((line) => line.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .join('\n');
+}
+
+function extractVerificationCode(...values) {
+  const text = values.map((value) => stripHtml(value)).join(' ');
+  const focusedPatterns = [
+    /(?:验证码|驗證碼|校验码|安全码|动态码|登录码|登陆码|verification\s*code|security\s*code|login\s*code|passcode|otp|code)[^\d]{0,40}(\d{4,8})/i,
+    /(\d{4,8})[^\d]{0,24}(?:验证码|驗證碼|校验码|安全码|verification\s*code|security\s*code|login\s*code|passcode|otp|code)/i
+  ];
+  for (const pattern of focusedPatterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) return match[1];
+  }
+  const fallback = text.match(/(^|[^\d])(\d{6})(?!\d)/);
+  return fallback?.[2] || '';
+}
+
+function messageText(...values) {
+  return values.map((value) => stripHtmlLines(value)).filter(Boolean).join('\n');
+}
+
+function senderHasEmail(sender, expectedEmail) {
+  const expected = normalizeEmail(expectedEmail);
+  return (String(sender || '').match(emailPatternGlobal) || []).map(normalizeEmail).includes(expected);
+}
+
+function hasAnyPattern(value, patterns) {
+  return patterns.some((pattern) => pattern.test(value));
+}
+
+function findSteamCodeToken(value) {
+  const ignored = new Set(['STEAM', 'VALVE', 'HTTPS']);
+  const candidates = [];
+  const matches = String(value || '').matchAll(/(^|[^A-Z0-9])([A-Z0-9]{5})(?![A-Z0-9])/g);
+  for (const match of matches) {
+    const token = match[2];
+    if (!ignored.has(token)) candidates.push(token);
+  }
+  return candidates.at(-1) || '';
+}
+
+const steamGuardPatterns = [
+  /Steam\s*Guard/i,
+  /Steam\s*ガード/i,
+  /ガードコード/,
+  /Steam\s*令牌/,
+  /Steam\s*安全/,
+  /验证码|驗證碼|安全代码|安全碼|登录码|登入碼|令牌码|令牌碼|动态码|動態碼/,
+  /보안\s*코드|가드\s*코드/,
+  /c[oó]digo.{0,40}(?:Steam|Guard)|(?:Steam|Guard).{0,40}c[oó]digo/i,
+  /code.{0,40}(?:Steam|Guard)|(?:Steam|Guard).{0,40}code/i,
+  /codice.{0,40}(?:Steam|Guard)|(?:Steam|Guard).{0,40}codice/i,
+  /c[oó]digo.{0,40}(?:Steam|Guard)|(?:Steam|Guard).{0,40}c[oó]digo/i,
+  /код.{0,40}(?:Steam|Guard)|(?:Steam|Guard).{0,40}код/i
+];
+
+const steamLoginPatterns = [
+  /new\s+(?:web|mobile|device)|new\s+login|login\s+attempt|access.{0,40}account/i,
+  /新しい.{0,20}(?:デバイス|機器|ログイン)|ログインしよう/,
+  /新的.{0,20}(?:设备|裝置|登录|登入)|新.{0,10}(?:Web|移动|流動)/,
+  /새.{0,20}(?:기기|로그인)|로그인.{0,20}시도/,
+  /nouveau.{0,30}(?:appareil|connexion)|tentative.{0,30}connexion/i,
+  /nuevo.{0,30}(?:dispositivo|inicio)|intento.{0,30}(?:inicio|sesión)/i,
+  /neue.{0,30}(?:gerät|anmeldung)|anmeldeversuch/i,
+  /нов.{0,30}(?:устрой|вход)|попыт.{0,30}вход/i
+];
+
+const steamRequestOriginPatterns = [
+  /リクエスト元[:：]?/,
+  /request\s*(?:origin|from)[:：]?/i,
+  /请求.{0,8}(?:来源|源)|請求.{0,8}(?:來源|源)|登录.{0,8}(?:地点|位置)|登入.{0,8}(?:地點|位置)/,
+  /요청.{0,8}(?:위치|출처)|로그인.{0,8}위치/,
+  /origine.{0,20}(?:demande|requête)|provenance/i,
+  /origen.{0,20}(?:solicitud|petición)|procedencia/i,
+  /origine.{0,20}richiesta/i,
+  /anforderungs.{0,12}(?:ort|ursprung)|anfrage.{0,12}(?:ort|ursprung)/i,
+  /источник.{0,20}запрос|место.{0,20}запрос/i
+];
+
+function findTokenNearLine(lines, patterns, afterLineCount) {
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!hasAnyPattern(lines[index], patterns)) continue;
+    const code = findSteamCodeToken(lines.slice(index, index + afterLineCount).join('\n'));
+    if (code) return code;
+  }
+  return '';
+}
+
+function extractSteamGuardCode(message) {
+  if (!senderHasEmail(message.sender, 'noreply@steampowered.com')) return '';
+  const text = messageText(message.subject, message.text, message.html);
+  const compact = text.replace(/\s+/g, ' ');
+  const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
+  const hasGuardSignal = hasAnyPattern(compact, steamGuardPatterns);
+  const hasLoginSignal = hasAnyPattern(compact, steamLoginPatterns);
+  const hasOriginSignal = hasAnyPattern(compact, steamRequestOriginPatterns);
+  const hasNearbyToken = Boolean(hasGuardSignal && findTokenNearLine(lines, steamGuardPatterns, 10));
+  const isLoginGuardMail = /Steam/i.test(text) && hasGuardSignal && (hasLoginSignal || hasOriginSignal || hasNearbyToken);
+  if (!isLoginGuardMail) return '';
+
+  const originCode = findTokenNearLine(lines, steamRequestOriginPatterns, 6);
+  if (originCode) return originCode;
+
+  const guardCode = findTokenNearLine(lines, steamGuardPatterns, 10);
+  if (guardCode) return guardCode;
+
+  for (const pattern of steamGuardPatterns) {
+    const markerIndex = compact.search(pattern);
+    if (markerIndex >= 0) {
+      const code = findSteamCodeToken(compact.slice(markerIndex, markerIndex + 480));
+      if (code) return code;
+    }
+  }
+  return findSteamCodeToken(compact.slice(0, 1200));
+}
+
+function extractMessageCode(message) {
+  const steamCode = extractSteamGuardCode(message);
+  if (steamCode) return steamCode;
+  if (senderHasEmail(message.sender, 'noreply@steampowered.com')) return '';
+  return extractVerificationCode(message.subject, message.text, message.html);
+}
+
+function graphAddresses(recipients = []) {
+  return recipients.map((item) => normalizeEmail(item?.emailAddress?.address)).filter(Boolean);
+}
+
+function messageRecipients(message) {
+  return [...(message.to || []), ...(message.cc || [])].map(normalizeEmail).filter(Boolean);
+}
+
+function recipientMatches(message, expectedEmail) {
+  const expected = normalizeEmail(expectedEmail);
+  return messageRecipients(message).some((email) => email === expected);
+}
+
+async function requestMicrosoftToken(refreshToken, clientId, graph = false) {
+  const body = new URLSearchParams({
+    client_id: clientId,
+    grant_type: 'refresh_token',
+    refresh_token: refreshToken
+  });
+  if (graph) body.set('scope', 'https://graph.microsoft.com/.default');
+
+  const response = await fetch('https://login.microsoftonline.com/consumers/oauth2/v2.0/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: body.toString()
+  });
+  const text = await response.text();
+  let data = {};
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    data = {};
+  }
+  if (!response.ok) {
+    const error = new Error('邮箱授权失效，请联系管理员');
+    error.status = 502;
+    throw error;
+  }
+  return data;
+}
+
+async function getGraphAccessToken(mailbox) {
+  const data = await requestMicrosoftToken(mailbox.refresh_token, mailbox.client_id, true);
+  const scope = String(data.scope || '');
+  if (!scope.includes('https://graph.microsoft.com/Mail.Read')) {
+    const error = new Error('Graph Mail.Read 权限不可用');
+    error.code = 'GRAPH_PERMISSION_MISSING';
+    throw error;
+  }
+  return data.access_token;
+}
+
+async function fetchGraphMessages(accessToken, folder) {
+  const url = new URL(`https://graph.microsoft.com/v1.0/me/mailFolders/${folder.graph}/messages`);
+  url.searchParams.set('$top', '100');
+  url.searchParams.set('$orderby', 'receivedDateTime desc');
+  url.searchParams.set('$select', 'id,subject,bodyPreview,body,receivedDateTime,createdDateTime,from,toRecipients,ccRecipients');
+  const response = await fetch(url.toString(), {
+    headers: { Authorization: `Bearer ${accessToken}` }
+  });
+  if (!response.ok) {
+    const error = new Error('读取邮箱失败，请联系管理员');
+    error.status = 502;
+    throw error;
+  }
+  const data = await response.json();
+  return (data.value || []).map((item) => ({
+    id: item.id,
+    mailbox: folder.label,
+    sender: item.from?.emailAddress?.address || '',
+    subject: item.subject || '',
+    text: item.bodyPreview || '',
+    html: item.body?.content || '',
+    receivedAt: item.receivedDateTime || item.createdDateTime || '',
+    to: graphAddresses(item.toRecipients),
+    cc: graphAddresses(item.ccRecipients)
+  }));
+}
+
+async function fetchImapMessages(mailbox, folder) {
+  const imapModule = await import('node-imap');
+  const parserModule = await import('mailparser');
+  const Imap = imapModule.default || imapModule;
+  const simpleParser = parserModule.simpleParser || parserModule.default?.simpleParser;
+  if (!Imap || !simpleParser) throw new Error('IMAP 依赖不可用');
+
+  const token = await requestMicrosoftToken(mailbox.refresh_token, mailbox.client_id, false);
+  const authString = Buffer.from(`user=${mailbox.email}\x01auth=Bearer ${token.access_token}\x01\x01`).toString('base64');
+
+  return new Promise((resolve, reject) => {
+    const imap = new Imap({
+      user: mailbox.email,
+      xoauth2: authString,
+      host: 'outlook.office365.com',
+      port: 993,
+      tls: true,
+      tlsOptions: { rejectUnauthorized: false }
+    });
+    const messages = [];
+    let settled = false;
+    let expected = 0;
+    let parsed = 0;
+
+    function finish(error) {
+      if (settled) return;
+      settled = true;
+      if (error) reject(error);
+      else resolve(messages.sort((a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime()));
+    }
+
+    imap.once('ready', async () => {
+      try {
+        await new Promise((openResolve, openReject) => {
+          imap.openBox(folder.imap, true, (error, box) => error ? openReject(error) : openResolve(box));
+        });
+        const ids = await new Promise((searchResolve, searchReject) => {
+          imap.search(['ALL'], (error, results) => error ? searchReject(error) : searchResolve(results || []));
+        });
+        const latest = ids.slice(-100);
+        expected = latest.length;
+        if (!expected) {
+          imap.end();
+          return;
+        }
+        const fetcher = imap.fetch(latest, { bodies: '' });
+        fetcher.on('message', (msg) => {
+          msg.on('body', (stream) => {
+            simpleParser(stream)
+              .then((mail) => {
+                messages.push({
+                  mailbox: folder.label,
+                  sender: mail.from?.text || '',
+                  subject: mail.subject || '',
+                  text: mail.text || '',
+                  html: mail.html || '',
+                  receivedAt: mail.date ? mail.date.toISOString() : '',
+                  to: (mail.to?.value || []).map((item) => normalizeEmail(item.address)).filter(Boolean),
+                  cc: (mail.cc?.value || []).map((item) => normalizeEmail(item.address)).filter(Boolean)
+                });
+              })
+              .catch(() => {})
+              .finally(() => {
+                parsed += 1;
+                if (parsed >= expected) imap.end();
+              });
+          });
+        });
+        fetcher.once('error', (error) => {
+          imap.end();
+          finish(error);
+        });
+      } catch (error) {
+        imap.end();
+        finish(error);
+      }
+    });
+
+    imap.once('error', finish);
+    imap.once('end', () => finish());
+    imap.connect();
+  });
+}
+
+function scanMessagesForCode(messages, expectedEmail) {
+  const ordered = [...messages].sort((a, b) => new Date(b.receivedAt || 0).getTime() - new Date(a.receivedAt || 0).getTime());
+  for (const message of ordered) {
+    if (!recipientMatches(message, expectedEmail)) continue;
+    const code = extractMessageCode(message);
+    if (!code) continue;
+    return {
+      code,
+      email: normalizeEmail(expectedEmail),
+      recipient: normalizeEmail(expectedEmail),
+      mailbox: message.mailbox,
+      subject: message.subject || '',
+      sender: message.sender || '',
+      receivedAt: message.receivedAt || ''
+    };
+  }
+  return null;
+}
+
+async function findMailboxCode(mailbox, expectedEmail) {
+  const errors = [];
+  let graphCompleted = false;
+  try {
+    const graphToken = await getGraphAccessToken(mailbox);
+    const graphMessages = [];
+    for (const folder of mailboxFolders) {
+      graphMessages.push(...await fetchGraphMessages(graphToken, folder));
+    }
+    const found = scanMessagesForCode(graphMessages, expectedEmail);
+    if (found) return found;
+    graphCompleted = true;
+  } catch (error) {
+    errors.push(error);
+  }
+
+  if (graphCompleted) return null;
+
+  const imapMessages = [];
+  for (const folder of mailboxFolders) {
+    try {
+      imapMessages.push(...await fetchImapMessages(mailbox, folder));
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  const found = scanMessagesForCode(imapMessages, expectedEmail);
+  if (found) return found;
+
+  if (errors.length && errors.every((error) => error.status === 502 || error.code === 'GRAPH_PERMISSION_MISSING')) {
+    const authError = errors.find((error) => error.status === 502);
+    if (authError && errors.length > 1) throw authError;
+  }
+  return null;
+}
+
 function autoStatusForBooking(booking, current = new Date()) {
   if (booking.status === 'cancelled' || booking.status === 'ended_early') return booking.status;
   const start = new Date(booking.starts_at);
@@ -313,6 +757,88 @@ app.delete('/api/account-names/:id', requireAuth, requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 
+app.get('/api/mailboxes', requireAuth, requireAdmin, (_req, res) => {
+  res.json(db.prepare('SELECT * FROM mailboxes ORDER BY created_at DESC').all());
+});
+
+app.post('/api/mailboxes', requireAuth, requireAdmin, (req, res) => {
+  const email = normalizeEmail(req.body.email);
+  const password = String(req.body.password || '').trim();
+  const clientId = String(req.body.client_id || '').trim();
+  const refreshToken = String(req.body.refresh_token || '').trim();
+  if (!email || !emailPattern.test(email) || !clientId || !refreshToken) {
+    return res.status(400).json({ error: '请填写邮箱、Client ID 和 Refresh Token' });
+  }
+  const duplicate = db.prepare('SELECT id FROM mailboxes WHERE email = ?').get(email);
+  if (duplicate) return res.status(409).json({ error: '这个邮箱已经存在' });
+  const id = nanoid();
+  const timestamp = now();
+  db.prepare('INSERT INTO mailboxes (id, email, password, client_id, refresh_token, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
+    id,
+    email,
+    password,
+    clientId,
+    refreshToken,
+    timestamp,
+    timestamp
+  );
+  audit(req.user.id, 'create', 'mailbox', id, `新增邮箱 ${email}`);
+  res.json(db.prepare('SELECT * FROM mailboxes WHERE id = ?').get(id));
+});
+
+app.put('/api/mailboxes/:id', requireAuth, requireAdmin, (req, res) => {
+  const old = db.prepare('SELECT * FROM mailboxes WHERE id = ?').get(req.params.id);
+  if (!old) return res.status(404).json({ error: '邮箱不存在' });
+  const email = normalizeEmail(req.body.email);
+  const password = String(req.body.password || '').trim();
+  const clientId = String(req.body.client_id || '').trim();
+  const refreshToken = String(req.body.refresh_token || '').trim();
+  if (!email || !emailPattern.test(email) || !clientId || !refreshToken) {
+    return res.status(400).json({ error: '请填写邮箱、Client ID 和 Refresh Token' });
+  }
+  const duplicate = db.prepare('SELECT id FROM mailboxes WHERE email = ? AND id != ?').get(email, req.params.id);
+  if (duplicate) return res.status(409).json({ error: '这个邮箱已经存在' });
+  db.prepare('UPDATE mailboxes SET email = ?, password = ?, client_id = ?, refresh_token = ?, updated_at = ? WHERE id = ?').run(
+    email,
+    password,
+    clientId,
+    refreshToken,
+    now(),
+    req.params.id
+  );
+  audit(req.user.id, 'update', 'mailbox', req.params.id, `修改邮箱 ${old.email} -> ${email}`);
+  res.json(db.prepare('SELECT * FROM mailboxes WHERE id = ?').get(req.params.id));
+});
+
+app.delete('/api/mailboxes/:id', requireAuth, requireAdmin, (req, res) => {
+  const old = db.prepare('SELECT * FROM mailboxes WHERE id = ?').get(req.params.id);
+  db.prepare('DELETE FROM mailboxes WHERE id = ?').run(req.params.id);
+  audit(req.user.id, 'delete', 'mailbox', req.params.id, `删除邮箱 ${old?.email || req.params.id}`);
+  res.json({ ok: true });
+});
+
+app.post('/api/mailboxes/import', requireAuth, requireAdmin, (req, res) => {
+  const parsed = parseMailboxImport(req.body.content, req.body.delimiter);
+  let created = 0;
+  let updated = 0;
+  const transaction = db.transaction(() => {
+    for (const item of parsed.valid) {
+      const result = upsertMailbox(item);
+      if (result === 'created') created += 1;
+      else updated += 1;
+    }
+  });
+  transaction();
+  audit(req.user.id, 'import', 'mailbox', null, `导入邮箱：新增 ${created}，更新 ${updated}，失败 ${parsed.invalid.length}`);
+  res.json({
+    total: parsed.total,
+    created,
+    updated,
+    failed: parsed.invalid.length,
+    invalid: parsed.invalid
+  });
+});
+
 app.post('/api/accounts', requireAuth, requireAdmin, (req, res) => {
   const { name, login, password, remark, status = 'active' } = req.body;
   if (!name?.trim() || !login?.trim() || !password?.trim()) return res.status(400).json({ error: '账号名称、账号和密码必填' });
@@ -348,6 +874,23 @@ app.delete('/api/accounts/:id', requireAuth, requireAdmin, (req, res) => {
   db.prepare('DELETE FROM accounts WHERE id = ?').run(req.params.id);
   audit(req.user.id, 'delete', 'account', req.params.id, '删除账号');
   res.json({ ok: true });
+});
+
+app.post('/api/accounts/:id/mail-code', requireAuth, async (req, res) => {
+  const account = db.prepare('SELECT * FROM accounts WHERE id = ?').get(req.params.id);
+  if (!account) return res.status(404).json({ error: '账号不存在' });
+  const email = extractFirstEmail(account.remark);
+  if (!email) return res.status(404).json({ error: '未找到邮箱，请联系管理员' });
+  const mailbox = db.prepare('SELECT * FROM mailboxes WHERE email = ?').get(email);
+  if (!mailbox) return res.status(404).json({ error: '未找到邮箱，请联系管理员' });
+  try {
+    const result = await findMailboxCode(mailbox, email);
+    if (!result) return res.status(404).json({ error: '未找到验证码，请稍后重试' });
+    audit(req.user.id, 'lookup', 'mail_code', account.id, `获取登录验证码 ${account.name}`);
+    res.json(result);
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message || '获取验证码失败，请联系管理员' });
+  }
 });
 
 app.get('/api/users', requireAuth, requireAdmin, (_req, res) => {
@@ -556,6 +1099,9 @@ app.post('/api/admin/import', requireAuth, requireAdmin, upload.single('file'), 
     payload = JSON.parse(zip.readAsText('data.json'));
     if (manifest.app !== 'cute-schedule' || manifest.version !== 1) throw new Error('版本不匹配');
     for (const table of TABLES) {
+      if (table === 'mailboxes' && !Array.isArray(payload[table])) {
+        payload[table] = [];
+      }
       if (table === 'account_names' && !Array.isArray(payload[table])) {
         const names = Array.from(new Set((payload.accounts || []).map((account) => String(account.name || '').trim()).filter(Boolean)));
         payload[table] = names.map((name) => ({ id: nanoid(), name, created_at: now() }));
