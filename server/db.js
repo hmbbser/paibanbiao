@@ -43,6 +43,7 @@ export function migrate() {
       id TEXT PRIMARY KEY,
       email TEXT NOT NULL UNIQUE,
       password TEXT DEFAULT '',
+      remark TEXT DEFAULT '',
       client_id TEXT NOT NULL,
       refresh_token TEXT NOT NULL,
       created_at TEXT NOT NULL,
@@ -86,6 +87,10 @@ export function migrate() {
   }
   if (!accountColumns.includes('mailbox_id')) {
     db.exec('ALTER TABLE accounts ADD COLUMN mailbox_id TEXT;');
+  }
+  const mailboxColumns = db.prepare('PRAGMA table_info(mailboxes)').all().map((column) => column.name);
+  if (!mailboxColumns.includes('remark')) {
+    db.exec("ALTER TABLE mailboxes ADD COLUMN remark TEXT DEFAULT '';");
   }
   ensureAccountSortOrder();
 

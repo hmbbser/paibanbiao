@@ -34,7 +34,7 @@ type User = { id: string; username: string; role: Role; enabled: boolean; create
 type AppSettings = { siteName: string; timezone: string; defaultView: string; exportVersion?: string; auditRetentionDays?: string; auditRetentionCustomDays?: string; accountCopyFields?: string; nameScrollSeconds?: string; toastDurationSeconds?: string };
 type Account = { id: string; name: string; login: string; password: string; remark: string; status: string; mailbox_id?: string; sort_order?: number; created_at: string };
 type AccountName = { id: string; name: string; created_at: string };
-type Mailbox = { id: string; email: string; password: string; client_id: string; refresh_token: string; created_at: string; updated_at: string };
+type Mailbox = { id: string; email: string; password: string; remark: string; client_id: string; refresh_token: string; created_at: string; updated_at: string };
 type MailCodeResult = { code: string; email: string; recipient?: string; mailbox?: string; subject?: string; sender?: string; receivedAt?: string };
 type PasswordResetLinkResult = { link: string; email: string; recipient?: string; mailbox?: string; subject?: string; sender?: string; receivedAt?: string };
 type BookingStatus = 'reserved' | 'active' | 'completed' | 'ended_early' | 'cancelled';
@@ -172,6 +172,7 @@ function createMockState(): MockState {
       id: 'm-1',
       email: 'demo@example.com',
       password: 'demo-password',
+      remark: '本地演示邮箱',
       client_id: 'demo-client-id',
       refresh_token: 'demo-refresh-token',
       created_at: mockNow(-20),
@@ -180,7 +181,7 @@ function createMockState(): MockState {
   ];
   accounts[0].mailbox_id = mailboxes[0].id;
   return {
-    settings: { ...defaultSettings, siteName: '账号出租管理系统', exportVersion: '0.2.8', auditRetentionDays: '7' },
+    settings: { ...defaultSettings, siteName: '账号出租管理系统', exportVersion: '0.2.9', auditRetentionDays: '7' },
     users: [admin, staff],
     accounts,
     mailboxes,
@@ -250,6 +251,12 @@ function normalizeMockState(state: MockState) {
   if (!Array.isArray(state.mailboxes)) {
     state.mailboxes = [];
     saveMockState(state);
+  } else {
+    const missingMailboxRemark = state.mailboxes.some((mailbox) => typeof mailbox.remark !== 'string');
+    if (missingMailboxRemark) {
+      state.mailboxes = state.mailboxes.map((mailbox) => ({ ...mailbox, remark: mailbox.remark || '' }));
+      saveMockState(state);
+    }
   }
   if (!Array.isArray(state.accountNames)) {
     state.accountNames = uniqueNames(state.accounts.map((account) => account.name)).map((name, index) => ({
@@ -327,13 +334,14 @@ function parseMailboxImportText(content: string, delimiter = '') {
   rows.forEach((line, index) => {
     let parsed: Omit<Mailbox, 'id' | 'created_at' | 'updated_at'> | null = null;
     for (const item of delimiters) {
-      const parts = line.split(item).map((part) => part.trim()).filter(Boolean);
+      const parts = line.split(item).map((part) => part.trim());
       if (parts.length < 4 || !emailRegex.test(parts[0])) continue;
       parsed = {
         email: normalizeEmailText(parts[0]),
         password: parts[1] || '',
         client_id: parts[2] || '',
-        refresh_token: parts.slice(3).join(item).trim()
+        refresh_token: parts[3] || '',
+        remark: parts.slice(4).join(item).trim()
       };
       break;
     }
@@ -463,7 +471,7 @@ async function mockApi<T>(url: string, options: RequestInit = {}): Promise<T> {
     saveMockState(state);
     return ok({ settings: state.settings });
   }
-  if (url === '/api/admin/version') return ok({ current: '0.2.8-local', latest: '0.2.8-local', hasUpdate: false, repo: 'hmbbser/paibanbiao', branch: 'main' });
+  if (url === '/api/admin/version') return ok({ current: '0.2.9-local', latest: '0.2.9-local', hasUpdate: false, repo: 'hmbbser/paibanbiao', branch: 'main' });
   if (url === '/api/admin/update' && method === 'POST') return ok({ message: '本地 UI 模式不执行真实更新' });
   if (url === '/api/admin/import' && method === 'POST') {
     if (options.body instanceof FormData) {
@@ -477,7 +485,7 @@ async function mockApi<T>(url: string, options: RequestInit = {}): Promise<T> {
         const importedUsers = imported.users;
         const importedAccounts = imported.accounts;
         const importedBookings = imported.bookings;
-        const importedMailboxes = imported.mailboxes || [];
+        const importedMailboxes = (imported.mailboxes || []).map((mailbox) => ({ ...mailbox, remark: mailbox.remark || '' }));
         const importedAccountNames = imported.accountNames || uniqueNames(importedAccounts.map((account) => account.name)).map((name, index) => ({
           id: `name-${index + 1}`,
           name,
@@ -509,6 +517,7 @@ async function mockApi<T>(url: string, options: RequestInit = {}): Promise<T> {
       id: crypto.randomUUID(),
       email,
       password: body.password || '',
+      remark: body.remark || '',
       client_id: body.client_id,
       refresh_token: body.refresh_token,
       created_at: new Date().toISOString(),
@@ -589,6 +598,7 @@ async function mockApi<T>(url: string, options: RequestInit = {}): Promise<T> {
       ...item,
       email,
       password: body.password || '',
+      remark: body.remark || '',
       client_id: body.client_id || '',
       refresh_token: body.refresh_token || '',
       updated_at: new Date().toISOString()
@@ -2080,12 +2090,12 @@ function BookingDrawer({
             <button type="button" className={durationHours(form.starts_at, form.ends_at) === hour ? 'active' : ''} key={hour} onClick={() => setDuration(hour)}>{hour}h</button>
           ))}
         </div>
-        <label>
-          <span>状态</span>
-          <select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value as BookingStatus })}>
-            {editableBookingStatuses.map((key) => <option key={key} value={key}>{statusText[key]}</option>)}
-          </select>
-        </label>
+        <FancySelect
+          label="状态"
+          value={form.status}
+          options={editableBookingStatuses.map((key) => ({ value: key, label: statusText[key] }))}
+          onChange={(status) => setForm({ ...form, status: status as BookingStatus })}
+        />
         <label>
           <span>备注</span>
           <textarea value={form.remark} onChange={(event) => setForm({ ...form, remark: event.target.value })} />
@@ -2802,7 +2812,7 @@ function MailboxesPanel() {
   const searchTerm = search.trim().toLowerCase();
   const visibleMailboxes = mailboxes.filter((mailbox) => {
     if (!searchTerm) return true;
-    return `${mailbox.email} ${mailbox.client_id} ${mailbox.password}`.toLowerCase().includes(searchTerm);
+    return `${mailbox.email} ${mailbox.client_id} ${mailbox.password} ${mailbox.remark || ''}`.toLowerCase().includes(searchTerm);
   });
 
   useEffect(() => {
@@ -2853,7 +2863,7 @@ function MailboxesPanel() {
   return (
     <Panel
       title="邮箱管理"
-      subtitle="维护微软邮箱 API 凭证，用于按账号备注邮箱获取登陆验证码"
+      subtitle="维护微软邮箱 API 凭证，用于按账号绑定邮箱获取登陆验证码"
       action={<button className="primary" onClick={() => setModal('new')}><Plus size={16} />添加邮箱</button>}
     >
       <div className="admin-toolbar mailbox-toolbar">
@@ -2869,6 +2879,7 @@ function MailboxesPanel() {
         <div className="admin-table-head mailbox-table-grid">
           <span>邮箱</span>
           <span>密码</span>
+          <span>备注</span>
           <span>Client ID</span>
           <span>Refresh Token</span>
           <span>更新时间</span>
@@ -2878,6 +2889,7 @@ function MailboxesPanel() {
           <div className="admin-table-row mailbox-table-grid" key={mailbox.id}>
             <MailboxCopyValue value={mailbox.email} label="邮箱" className="mailbox-email mailbox-visible-value">{mailbox.email}</MailboxCopyValue>
             <MailboxCopyValue value={mailbox.password} label="密码" className="mono-value mailbox-visible-value">{mailbox.password}</MailboxCopyValue>
+            <MailboxCopyValue value={mailbox.remark || ''} label="备注" className="mailbox-remark mailbox-visible-value">{mailbox.remark || '-'}</MailboxCopyValue>
             <MailboxCopyValue value={mailbox.client_id} label="Client ID" className="mono-value">{maskSecret(mailbox.client_id, 8, 6)}</MailboxCopyValue>
             <MailboxCopyValue value={mailbox.refresh_token} label="Refresh Token" className="mono-value token-preview">{maskSecret(mailbox.refresh_token, 10, 6)}</MailboxCopyValue>
             <span>{formatDateTime(mailbox.updated_at || mailbox.created_at)}</span>
@@ -2902,6 +2914,8 @@ function MailboxesPanel() {
             <div className="mobile-mailbox-fields">
               <span>密码</span>
               <MailboxCopyValue value={mailbox.password} label="密码" className="mono-value mailbox-visible-value">{mailbox.password}</MailboxCopyValue>
+              <span>备注</span>
+              <MailboxCopyValue value={mailbox.remark || ''} label="备注" className="mailbox-remark mailbox-visible-value">{mailbox.remark || '-'}</MailboxCopyValue>
               <span>Client ID</span>
               <MailboxCopyValue value={mailbox.client_id} label="Client ID" className="mono-value">{maskSecret(mailbox.client_id, 8, 6)}</MailboxCopyValue>
               <span>Refresh Token</span>
@@ -2963,6 +2977,7 @@ function MailboxModal({
   const [form, setForm] = useState({
     email: mailbox?.email || '',
     password: mailbox?.password || '',
+    remark: mailbox?.remark || '',
     client_id: mailbox?.client_id || '',
     refresh_token: mailbox?.refresh_token || ''
   });
@@ -2997,6 +3012,10 @@ function MailboxModal({
         <form className="modal-form" onSubmit={save}>
           <Field label="邮箱" value={form.email} onChange={(email) => setForm({ ...form, email })} required />
           <Field label="密码" value={form.password} onChange={(password) => setForm({ ...form, password })} />
+          <label>
+            <span>备注</span>
+            <textarea className="mailbox-remark-textarea" value={form.remark} onChange={(event) => setForm({ ...form, remark: event.target.value })} />
+          </label>
           <Field label="Client ID" value={form.client_id} onChange={(client_id) => setForm({ ...form, client_id })} required />
           <label>
             <span>Refresh Token</span>
@@ -3061,7 +3080,7 @@ function MailboxImportModal({
               className="mailbox-import-textarea"
               value={content}
               onChange={(event) => setContent(event.target.value)}
-              placeholder="邮箱----密码----Client ID----Refresh Token"
+              placeholder="邮箱----密码----Client ID----Refresh Token----备注"
               required
             />
           </label>
@@ -3767,10 +3786,15 @@ function UsersPanel({ users, refresh }: { users: User[]; refresh: () => void }) 
       <form className="inline-form" onSubmit={create}>
         <input placeholder="用户名" value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} />
         <input placeholder="密码" type="password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} />
-        <select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}>
-          <option value="user">普通用户</option>
-          <option value="admin">管理员</option>
-        </select>
+        <FancySelect
+          label="角色"
+          value={form.role}
+          options={[
+            { value: 'user', label: '普通用户' },
+            { value: 'admin', label: '管理员' }
+          ]}
+          onChange={(role) => setForm({ ...form, role })}
+        />
         <button className="primary"><UserPlus size={15} />新增用户</button>
       </form>
       <div className="table-list">
@@ -4178,20 +4202,24 @@ function UserModal({ user, onClose, onSaved }: { user: User | null; onClose: () 
           <Field label="用户名" value={form.username} onChange={(username) => setForm({ ...form, username })} />
           <Field label={user ? '新密码（留空不修改）' : '密码'} type="password" value={form.password} onChange={(password) => setForm({ ...form, password })} />
           <div className="form-grid-2">
-            <label>
-              <span>角色</span>
-              <select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value as Role })}>
-                <option value="user">普通用户</option>
-                <option value="admin">管理员</option>
-              </select>
-            </label>
-            <label>
-              <span>状态</span>
-              <select value={form.enabled ? '1' : '0'} onChange={(event) => setForm({ ...form, enabled: event.target.value === '1' })}>
-                <option value="1">启用</option>
-                <option value="0">停用</option>
-              </select>
-            </label>
+            <FancySelect
+              label="角色"
+              value={form.role}
+              options={[
+                { value: 'user', label: '普通用户', hint: '可查看时间线，维护自己的记录' },
+                { value: 'admin', label: '管理员', hint: '拥有系统管理权限' }
+              ]}
+              onChange={(role) => setForm({ ...form, role: role as Role })}
+            />
+            <FancySelect
+              label="状态"
+              value={form.enabled ? '1' : '0'}
+              options={[
+                { value: '1', label: '启用', hint: '允许登录' },
+                { value: '0', label: '停用', hint: '禁止登录' }
+              ]}
+              onChange={(enabled) => setForm({ ...form, enabled: enabled === '1' })}
+            />
           </div>
           {error && <div className="form-error">{error}</div>}
           <div className="modal-actions">
@@ -4315,20 +4343,24 @@ function RecordsPanel({
       <Panel title="记录" subtitle="按账号和操作用户筛选记录。">
         <div className="admin-toolbar">
           <div className="filter-group">
-            <label>
-              <span>筛选账号</span>
-              <select value={accountFilter} onChange={(event) => setAccountFilter(event.target.value)}>
-                <option value="all">全部账号</option>
-                {accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
-              </select>
-            </label>
-            <label>
-              <span>筛选用户</span>
-              <select value={userFilter} onChange={(event) => setUserFilter(event.target.value)}>
-                <option value="all">全部用户</option>
-                {users.map((item) => <option key={item.id} value={item.id}>{item.username}</option>)}
-              </select>
-            </label>
+            <FancySelect
+              label="筛选账号"
+              value={accountFilter}
+              options={[
+                { value: 'all', label: '全部账号' },
+                ...accounts.map((account) => ({ value: account.id, label: account.name, hint: account.login }))
+              ]}
+              onChange={setAccountFilter}
+            />
+            <FancySelect
+              label="筛选用户"
+              value={userFilter}
+              options={[
+                { value: 'all', label: '全部用户' },
+                ...users.map((item) => ({ value: item.id, label: item.username, hint: item.role === 'admin' ? '管理员' : '普通用户' }))
+              ]}
+              onChange={setUserFilter}
+            />
           </div>
           <div className="row-actions">
             <button className="soft-btn" onClick={refreshRecords}><RefreshCw size={16} />刷新</button>
@@ -4586,29 +4618,35 @@ function SettingsPanel({ user, settings, onSettings }: { user: User; settings: A
               <p>这里控制左上角系统名字和浏览器标题。</p>
               <div className="settings-fields">
                 <Field label="系统名字" value={form.siteName || ''} onChange={(siteName) => setForm({ ...form, siteName })} />
-                <label>
-                  <span>时区</span>
-                  <select value={form.timezone || 'Asia/Shanghai'} onChange={(event) => setForm({ ...form, timezone: event.target.value })}>
-                    <option value="Asia/Shanghai">Asia/Shanghai</option>
-                    <option value="UTC">UTC</option>
-                  </select>
-                </label>
-                <label>
-                  <span>默认视图</span>
-                  <select value={form.defaultView || 'day'} onChange={(event) => setForm({ ...form, defaultView: event.target.value })}>
-                    <option value="day">日视图</option>
-                    <option value="week">周视图</option>
-                  </select>
-                </label>
-                <label>
-                  <span>记录删除规则</span>
-                  <select value={form.auditRetentionDays || '7'} onChange={(event) => setForm({ ...form, auditRetentionDays: event.target.value })}>
-                    <option value="3">每 3 天清理一次</option>
-                    <option value="7">每 7 天清理一次</option>
-                    <option value="30">每 30 天清理一次</option>
-                    <option value="custom">自定义时间段</option>
-                  </select>
-                </label>
+                <FancySelect
+                  label="时区"
+                  value={form.timezone || 'Asia/Shanghai'}
+                  options={[
+                    { value: 'Asia/Shanghai', label: 'Asia/Shanghai', hint: '中国时间' },
+                    { value: 'UTC', label: 'UTC', hint: '协调世界时' }
+                  ]}
+                  onChange={(timezone) => setForm({ ...form, timezone })}
+                />
+                <FancySelect
+                  label="默认视图"
+                  value={form.defaultView || 'day'}
+                  options={[
+                    { value: 'day', label: '日视图', hint: '按天查看排班' },
+                    { value: 'week', label: '周视图', hint: '按周查看排班' }
+                  ]}
+                  onChange={(defaultView) => setForm({ ...form, defaultView })}
+                />
+                <FancySelect
+                  label="记录删除规则"
+                  value={form.auditRetentionDays || '7'}
+                  options={[
+                    { value: '3', label: '每 3 天清理一次' },
+                    { value: '7', label: '每 7 天清理一次' },
+                    { value: '30', label: '每 30 天清理一次' },
+                    { value: 'custom', label: '自定义时间段' }
+                  ]}
+                  onChange={(auditRetentionDays) => setForm({ ...form, auditRetentionDays })}
+                />
                 <Field label="长名称滚动速度（秒）" type="number" value={form.nameScrollSeconds || defaultSettings.nameScrollSeconds || '8'} onChange={(nameScrollSeconds) => setForm({ ...form, nameScrollSeconds })} />
                 <Field label="提示弹窗显示时间（秒）" type="number" value={form.toastDurationSeconds || defaultSettings.toastDurationSeconds || '1'} onChange={(toastDurationSeconds) => setForm({ ...form, toastDurationSeconds })} />
                 {form.auditRetentionDays === 'custom' && (

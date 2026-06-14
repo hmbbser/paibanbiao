@@ -481,7 +481,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--mint); box-shado
   background: linear-gradient(90deg, #14b8a6, #85cdf6);
 }
 .inline-form { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
-.inline-form input, .inline-form select { width: 150px; }
+.inline-form input, .inline-form .fancy-select-field { width: 150px; }
 .cards-grid, .backup-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
 .data-card, .settings-card {
   background: #fbfffe;
@@ -767,8 +767,9 @@ input:focus, select:focus, textarea:focus { border-color: var(--mint); box-shado
 .admin-table-row.account-table.manage {
   min-width: 1300px;
 }
-.mailbox-table-grid { grid-template-columns: minmax(280px, 1.35fr) minmax(150px, 0.85fr) minmax(180px, 1fr) minmax(220px, 1.18fr) 140px 120px; }
+.mailbox-table-grid { grid-template-columns: minmax(250px, 1.25fr) minmax(140px, 0.75fr) minmax(170px, 0.9fr) minmax(180px, 1fr) minmax(220px, 1.15fr) 136px 120px; }
 .mailbox-email,
+.mailbox-remark,
 .mono-value,
 .token-preview {
   min-width: 0;
@@ -807,6 +808,14 @@ input:focus, select:focus, textarea:focus { border-color: var(--mint); box-shado
   overflow: visible;
   text-overflow: clip;
   white-space: nowrap;
+}
+.mailbox-copy-value.mailbox-remark span {
+  white-space: normal;
+  line-height: 1.35;
+}
+.mailbox-remark-textarea {
+  min-height: 72px;
+  resize: vertical;
 }
 .mailbox-copy-value:hover,
 .mailbox-copy-value:focus-visible {
@@ -1454,7 +1463,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--mint); box-shado
   gap: 12px;
   flex-wrap: wrap;
 }
-.filter-group label {
+.filter-group .fancy-select-field {
   min-width: 180px;
 }
 .records-stack {
@@ -1585,11 +1594,12 @@ input:focus, select:focus, textarea:focus { border-color: var(--mint); box-shado
   background: rgba(255, 255, 255, 0.58);
 }
 .settings-fields label,
-.settings-fields .form-field {
+.settings-fields .form-field,
+.settings-fields .fancy-select-field {
   min-width: 0;
 }
 .settings-fields input,
-.settings-fields select {
+.settings-fields .fancy-select-trigger {
   min-height: 42px;
   border-radius: 14px;
   background: linear-gradient(180deg, #ffffff, #fbfffe);
@@ -2737,9 +2747,9 @@ input:focus, select:focus, textarea:focus { border-color: var(--mint); box-shado
   justify-content: stretch;
 }
 .booking-modal input,
-.booking-modal select,
 .booking-modal textarea,
 .booking-modal .date-control,
+.booking-modal .fancy-select-trigger,
 .booking-modal .time-select {
   min-height: 38px;
   border-radius: 13px;
@@ -3273,7 +3283,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--mint); box-shado
     overflow-x: auto;
   }
   .mailbox-table-grid {
-    min-width: 1120px;
+    min-width: 1280px;
   }
   .mail-code-details {
     grid-template-columns: 1fr;
@@ -3795,10 +3805,10 @@ input:focus, select:focus, textarea:focus { border-color: var(--mint); box-shado
     grid-template-columns: 1fr 1fr;
     gap: 10px;
   }
-  .filter-group label {
+  .filter-group .fancy-select-field {
     min-width: 0;
   }
-  .filter-group select {
+  .filter-group .fancy-select-trigger {
     min-height: 42px;
   }
   .user-account-table,
@@ -4088,7 +4098,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--mint); box-shado
     border-radius: 13px;
   }
   .inline-form { display: grid; }
-  .inline-form input, .inline-form select { width: 100%; }
+  .inline-form input, .inline-form .fancy-select-field { width: 100%; }
   .table-row, .table-row.record { grid-template-columns: 1fr; align-items: start; }
   .settings-card {
     grid-template-columns: 1fr;

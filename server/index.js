@@ -156,13 +156,14 @@ function parseMailboxLine(line, delimiter = '') {
   if (!raw) return null;
   const delimiters = delimiter?.trim() ? [delimiter.trim()] : ['----', '|', '\t', ',', ';', ' '];
   for (const item of delimiters) {
-    const parts = raw.split(item).map((part) => part.trim()).filter(Boolean);
+    const parts = raw.split(item).map((part) => part.trim());
     if (parts.length < 4 || !emailPattern.test(parts[0])) continue;
     return {
       email: normalizeEmail(parts[0]),
       password: parts[1] || '',
       client_id: parts[2] || '',
-      refresh_token: parts.slice(3).join(item).trim()
+      refresh_token: parts[3] || '',
+      remark: parts.slice(4).join(item).trim()
     };
   }
   return null;
@@ -187,8 +188,9 @@ function upsertMailbox(item) {
   const existing = db.prepare('SELECT id FROM mailboxes WHERE email = ?').get(item.email);
   const timestamp = now();
   if (existing) {
-    db.prepare('UPDATE mailboxes SET password = ?, client_id = ?, refresh_token = ?, updated_at = ? WHERE email = ?').run(
+    db.prepare('UPDATE mailboxes SET password = ?, remark = ?, client_id = ?, refresh_token = ?, updated_at = ? WHERE email = ?').run(
       item.password || '',
+      item.remark || '',
       item.client_id,
       item.refresh_token,
       timestamp,
@@ -196,10 +198,11 @@ function upsertMailbox(item) {
     );
     return 'updated';
   }
-  db.prepare('INSERT INTO mailboxes (id, email, password, client_id, refresh_token, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
+  db.prepare('INSERT INTO mailboxes (id, email, password, remark, client_id, refresh_token, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(
     nanoid(),
     item.email,
     item.password || '',
+    item.remark || '',
     item.client_id,
     item.refresh_token,
     timestamp,
@@ -906,6 +909,7 @@ app.get('/api/mailboxes', requireAuth, requireAdmin, (_req, res) => {
 app.post('/api/mailboxes', requireAuth, requireAdmin, (req, res) => {
   const email = normalizeEmail(req.body.email);
   const password = String(req.body.password || '').trim();
+  const remark = String(req.body.remark || '').trim();
   const clientId = String(req.body.client_id || '').trim();
   const refreshToken = String(req.body.refresh_token || '').trim();
   if (!email || !emailPattern.test(email) || !clientId || !refreshToken) {
@@ -915,10 +919,11 @@ app.post('/api/mailboxes', requireAuth, requireAdmin, (req, res) => {
   if (duplicate) return res.status(409).json({ error: '这个邮箱已经存在' });
   const id = nanoid();
   const timestamp = now();
-  db.prepare('INSERT INTO mailboxes (id, email, password, client_id, refresh_token, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
+  db.prepare('INSERT INTO mailboxes (id, email, password, remark, client_id, refresh_token, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(
     id,
     email,
     password,
+    remark,
     clientId,
     refreshToken,
     timestamp,
@@ -933,6 +938,7 @@ app.put('/api/mailboxes/:id', requireAuth, requireAdmin, (req, res) => {
   if (!old) return res.status(404).json({ error: '邮箱不存在' });
   const email = normalizeEmail(req.body.email);
   const password = String(req.body.password || '').trim();
+  const remark = String(req.body.remark || '').trim();
   const clientId = String(req.body.client_id || '').trim();
   const refreshToken = String(req.body.refresh_token || '').trim();
   if (!email || !emailPattern.test(email) || !clientId || !refreshToken) {
@@ -940,9 +946,10 @@ app.put('/api/mailboxes/:id', requireAuth, requireAdmin, (req, res) => {
   }
   const duplicate = db.prepare('SELECT id FROM mailboxes WHERE email = ? AND id != ?').get(email, req.params.id);
   if (duplicate) return res.status(409).json({ error: '这个邮箱已经存在' });
-  db.prepare('UPDATE mailboxes SET email = ?, password = ?, client_id = ?, refresh_token = ?, updated_at = ? WHERE id = ?').run(
+  db.prepare('UPDATE mailboxes SET email = ?, password = ?, remark = ?, client_id = ?, refresh_token = ?, updated_at = ? WHERE id = ?').run(
     email,
     password,
+    remark,
     clientId,
     refreshToken,
     now(),
