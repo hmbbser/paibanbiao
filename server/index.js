@@ -90,6 +90,12 @@ function auditRetentionDays() {
   return Number.isFinite(days) && days > 0 ? days : 7;
 }
 
+function mailLookupWindowMinutes() {
+  const settings = Object.fromEntries(allRows('settings').map((item) => [item.key, item.value]));
+  const minutes = Number(settings.mailLookupWindowMinutes || 10);
+  return Number.isFinite(minutes) && minutes > 0 ? minutes : 10;
+}
+
 function pruneAuditLogs() {
   const cutoff = new Date(Date.now() - auditRetentionDays() * 24 * 60 * 60 * 1000).toISOString();
   db.prepare('DELETE FROM audit_logs WHERE created_at < ?').run(cutoff);
@@ -149,6 +155,10 @@ function normalizeEmail(value) {
 function extractFirstEmail(value) {
   const match = String(value || '').match(emailPattern);
   return match ? normalizeEmail(match[0]) : '';
+}
+
+function expectedRecipientForAccount(account, mailbox) {
+  return extractFirstEmail(account?.remark) || normalizeEmail(mailbox?.email);
 }
 
 function parseMailboxLine(line, delimiter = '') {
@@ -301,6 +311,7 @@ function findSteamCodeToken(value) {
   const matches = String(value || '').matchAll(/(^|[^A-Z0-9])([A-Z0-9]{5})(?![A-Z0-9])/g);
   for (const match of matches) {
     const token = match[2];
+    if (!/[A-Z]/.test(token)) continue;
     if (!ignored.has(token)) candidates.push(token);
   }
   return candidates.at(-1) || '';
@@ -335,7 +346,7 @@ const steamLoginPatterns = [
 const steamRequestOriginPatterns = [
   /リクエスト元[:：]?/,
   /request\s*(?:origin|from)[:：]?/i,
-  /请求.{0,8}(?:来源|源)|請求.{0,8}(?:來源|源)|登录.{0,8}(?:地点|位置)|登入.{0,8}(?:地點|位置)/,
+  /请求.{0,8}(?:来自|来源|源)|請求.{0,8}(?:來自|來源|源)|登录.{0,8}(?:地点|位置)|登入.{0,8}(?:地點|位置)/,
   /요청.{0,8}(?:위치|출처)|로그인.{0,8}위치/,
   /origine.{0,20}(?:demande|requête)|provenance/i,
   /origen.{0,20}(?:solicitud|petición)|procedencia/i,
@@ -354,15 +365,13 @@ function findTokenNearLine(lines, patterns, afterLineCount) {
 }
 
 function extractSteamGuardCode(message) {
-  if (!senderHasEmail(message.sender, 'noreply@steampowered.com')) return '';
   const text = messageText(message.subject, message.text, message.html);
   const compact = text.replace(/\s+/g, ' ');
   const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
   const hasGuardSignal = hasAnyPattern(compact, steamGuardPatterns);
   const hasLoginSignal = hasAnyPattern(compact, steamLoginPatterns);
   const hasOriginSignal = hasAnyPattern(compact, steamRequestOriginPatterns);
-  const hasNearbyToken = Boolean(hasGuardSignal && findTokenNearLine(lines, steamGuardPatterns, 10));
-  const isLoginGuardMail = /Steam/i.test(text) && hasGuardSignal && (hasLoginSignal || hasOriginSignal || hasNearbyToken);
+  const isLoginGuardMail = /Steam/i.test(text) && hasGuardSignal && (hasLoginSignal || hasOriginSignal);
   if (!isLoginGuardMail) return '';
 
   const originCode = findTokenNearLine(lines, steamRequestOriginPatterns, 6);
@@ -429,7 +438,6 @@ function steamRecoveryLinkFromCandidate(candidate) {
 }
 
 function extractSteamRecoveryLink(message) {
-  if (!senderHasEmail(message.sender, 'noreply@steampowered.com')) return '';
   const raw = decodeHtmlEntities([message.subject, message.text, message.html].filter(Boolean).join('\n'));
   const text = messageText(message.subject, message.text, message.html);
   const compact = `${stripHtml(raw)} ${text}`.replace(/\s+/g, ' ');
@@ -448,13 +456,54 @@ function graphAddresses(recipients = []) {
   return recipients.map((item) => normalizeEmail(item?.emailAddress?.address)).filter(Boolean);
 }
 
+function graphHeaderValues(headers = []) {
+  const wanted = new Set(['to', 'cc', 'delivered-to', 'x-original-to', 'envelope-to', 'resent-to']);
+  return headers
+    .filter((item) => wanted.has(String(item?.name || '').toLowerCase()))
+    .map((item) => String(item?.value || ''))
+    .filter(Boolean);
+}
+
+function parsedMailHeaderValues(mail) {
+  const wanted = ['to', 'cc', 'delivered-to', 'x-original-to', 'envelope-to', 'resent-to'];
+  const values = [];
+  for (const key of wanted) {
+    const value = mail.headers?.get?.(key);
+    if (!value) continue;
+    if (typeof value === 'string') values.push(value);
+    else if (Array.isArray(value)) values.push(...value.map((item) => typeof item === 'string' ? item : item?.text || item?.address || ''));
+    else values.push(value.text || value.address || String(value));
+  }
+  for (const line of mail.headerLines || []) {
+    if (wanted.includes(String(line.key || '').toLowerCase())) values.push(String(line.line || line.value || ''));
+  }
+  return values.filter(Boolean);
+}
+
+function emailsFromText(value) {
+  return (String(value || '').match(emailPatternGlobal) || []).map(normalizeEmail).filter(Boolean);
+}
+
 function messageRecipients(message) {
-  return [...(message.to || []), ...(message.cc || [])].map(normalizeEmail).filter(Boolean);
+  return Array.from(new Set([
+    ...(message.to || []),
+    ...(message.cc || []),
+    ...(message.headers || []).flatMap(emailsFromText)
+  ].map(normalizeEmail).filter(Boolean)));
 }
 
 function recipientMatches(message, expectedEmail) {
   const expected = normalizeEmail(expectedEmail);
   return messageRecipients(message).some((email) => email === expected);
+}
+
+function withinLookupWindow(receivedAt, requestAt, windowMinutes) {
+  const receivedTime = new Date(receivedAt || '').getTime();
+  const requestTime = new Date(requestAt || '').getTime();
+  const minutes = Number(windowMinutes || 10);
+  if (!Number.isFinite(receivedTime) || !Number.isFinite(requestTime)) return false;
+  if (!Number.isFinite(minutes) || minutes <= 0) return false;
+  return Math.abs(receivedTime - requestTime) <= minutes * 60 * 1000;
 }
 
 async function requestMicrosoftToken(refreshToken, clientId, graph = false) {
@@ -500,7 +549,7 @@ async function fetchGraphMessages(accessToken, folder) {
   const url = new URL(`https://graph.microsoft.com/v1.0/me/mailFolders/${folder.graph}/messages`);
   url.searchParams.set('$top', '100');
   url.searchParams.set('$orderby', 'receivedDateTime desc');
-  url.searchParams.set('$select', 'id,subject,bodyPreview,body,receivedDateTime,createdDateTime,from,toRecipients,ccRecipients');
+  url.searchParams.set('$select', 'id,subject,bodyPreview,body,receivedDateTime,createdDateTime,from,toRecipients,ccRecipients,internetMessageHeaders');
   const response = await fetch(url.toString(), {
     headers: { Authorization: `Bearer ${accessToken}` }
   });
@@ -519,7 +568,8 @@ async function fetchGraphMessages(accessToken, folder) {
     html: item.body?.content || '',
     receivedAt: item.receivedDateTime || item.createdDateTime || '',
     to: graphAddresses(item.toRecipients),
-    cc: graphAddresses(item.ccRecipients)
+    cc: graphAddresses(item.ccRecipients),
+    headers: graphHeaderValues(item.internetMessageHeaders)
   }));
 }
 
@@ -581,7 +631,8 @@ async function fetchImapMessages(mailbox, folder) {
                   html: mail.html || '',
                   receivedAt: mail.date ? mail.date.toISOString() : '',
                   to: (mail.to?.value || []).map((item) => normalizeEmail(item.address)).filter(Boolean),
-                  cc: (mail.cc?.value || []).map((item) => normalizeEmail(item.address)).filter(Boolean)
+                  cc: (mail.cc?.value || []).map((item) => normalizeEmail(item.address)).filter(Boolean),
+                  headers: parsedMailHeaderValues(mail)
                 });
               })
               .catch(() => {})
@@ -607,11 +658,12 @@ async function fetchImapMessages(mailbox, folder) {
   });
 }
 
-function scanMessagesForCode(messages, expectedEmail) {
+function scanMessagesForCode(messages, expectedEmail, options = {}) {
   const ordered = [...messages].sort((a, b) => new Date(b.receivedAt || 0).getTime() - new Date(a.receivedAt || 0).getTime());
   for (const message of ordered) {
     if (!recipientMatches(message, expectedEmail)) continue;
-    const code = extractMessageCode(message);
+    if (!withinLookupWindow(message.receivedAt, options.requestAt, options.windowMinutes)) continue;
+    const code = extractSteamGuardCode(message);
     if (!code) continue;
     return {
       code,
@@ -626,10 +678,11 @@ function scanMessagesForCode(messages, expectedEmail) {
   return null;
 }
 
-function scanMessagesForRecoveryLink(messages, expectedEmail) {
+function scanMessagesForRecoveryLink(messages, expectedEmail, options = {}) {
   const ordered = [...messages].sort((a, b) => new Date(b.receivedAt || 0).getTime() - new Date(a.receivedAt || 0).getTime());
   for (const message of ordered) {
     if (!recipientMatches(message, expectedEmail)) continue;
+    if (!withinLookupWindow(message.receivedAt, options.requestAt, options.windowMinutes)) continue;
     const link = extractSteamRecoveryLink(message);
     if (!link) continue;
     return {
@@ -645,17 +698,16 @@ function scanMessagesForRecoveryLink(messages, expectedEmail) {
   return null;
 }
 
-async function findMailboxCode(mailbox, expectedEmail) {
+async function findMailboxCode(mailbox, expectedEmail, options = {}) {
   const errors = [];
   let graphCompleted = false;
   try {
     const graphToken = await getGraphAccessToken(mailbox);
-    const graphMessages = [];
     for (const folder of mailboxFolders) {
-      graphMessages.push(...await fetchGraphMessages(graphToken, folder));
+      const graphMessages = await fetchGraphMessages(graphToken, folder);
+      const found = scanMessagesForCode(graphMessages, expectedEmail, options);
+      if (found) return found;
     }
-    const found = scanMessagesForCode(graphMessages, expectedEmail);
-    if (found) return found;
     graphCompleted = true;
   } catch (error) {
     errors.push(error);
@@ -663,16 +715,15 @@ async function findMailboxCode(mailbox, expectedEmail) {
 
   if (graphCompleted) return null;
 
-  const imapMessages = [];
   for (const folder of mailboxFolders) {
     try {
-      imapMessages.push(...await fetchImapMessages(mailbox, folder));
+      const imapMessages = await fetchImapMessages(mailbox, folder);
+      const found = scanMessagesForCode(imapMessages, expectedEmail, options);
+      if (found) return found;
     } catch (error) {
       errors.push(error);
     }
   }
-  const found = scanMessagesForCode(imapMessages, expectedEmail);
-  if (found) return found;
 
   if (errors.length && errors.every((error) => error.status === 502 || error.code === 'GRAPH_PERMISSION_MISSING')) {
     const authError = errors.find((error) => error.status === 502);
@@ -681,17 +732,16 @@ async function findMailboxCode(mailbox, expectedEmail) {
   return null;
 }
 
-async function findMailboxRecoveryLink(mailbox, expectedEmail) {
+async function findMailboxRecoveryLink(mailbox, expectedEmail, options = {}) {
   const errors = [];
   let graphCompleted = false;
   try {
     const graphToken = await getGraphAccessToken(mailbox);
-    const graphMessages = [];
     for (const folder of mailboxFolders) {
-      graphMessages.push(...await fetchGraphMessages(graphToken, folder));
+      const graphMessages = await fetchGraphMessages(graphToken, folder);
+      const found = scanMessagesForRecoveryLink(graphMessages, expectedEmail, options);
+      if (found) return found;
     }
-    const found = scanMessagesForRecoveryLink(graphMessages, expectedEmail);
-    if (found) return found;
     graphCompleted = true;
   } catch (error) {
     errors.push(error);
@@ -699,16 +749,15 @@ async function findMailboxRecoveryLink(mailbox, expectedEmail) {
 
   if (graphCompleted) return null;
 
-  const imapMessages = [];
   for (const folder of mailboxFolders) {
     try {
-      imapMessages.push(...await fetchImapMessages(mailbox, folder));
+      const imapMessages = await fetchImapMessages(mailbox, folder);
+      const found = scanMessagesForRecoveryLink(imapMessages, expectedEmail, options);
+      if (found) return found;
     } catch (error) {
       errors.push(error);
     }
   }
-  const found = scanMessagesForRecoveryLink(imapMessages, expectedEmail);
-  if (found) return found;
 
   if (errors.length && errors.every((error) => error.status === 502 || error.code === 'GRAPH_PERMISSION_MISSING')) {
     const authError = errors.find((error) => error.status === 502);
@@ -846,7 +895,7 @@ app.get('/api/settings', requireAuth, (_req, res) => {
 });
 
 app.put('/api/settings', requireAuth, requireAdmin, (req, res) => {
-  const allowed = ['siteName', 'timezone', 'defaultView', 'auditRetentionDays', 'auditRetentionCustomDays', 'accountCopyFields', 'nameScrollSeconds', 'toastDurationSeconds'];
+  const allowed = ['siteName', 'timezone', 'defaultView', 'auditRetentionDays', 'auditRetentionCustomDays', 'accountCopyFields', 'nameScrollSeconds', 'toastDurationSeconds', 'mailLookupWindowMinutes'];
   const update = db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)');
   for (const key of allowed) {
     if (typeof req.body[key] === 'string') update.run(key, req.body[key].trim());
@@ -1059,14 +1108,21 @@ app.delete('/api/accounts/:id', requireAuth, requireAdmin, (req, res) => {
 app.post('/api/accounts/:id/mail-code', requireAuth, async (req, res) => {
   const account = db.prepare('SELECT * FROM accounts WHERE id = ?').get(req.params.id);
   if (!account) return res.status(404).json({ error: '账号不存在' });
+  const requestAt = now();
+  const windowMinutes = mailLookupWindowMinutes();
+  let recipient = '';
   try {
     const mailbox = mailboxForAccount(account);
-    const email = normalizeEmail(mailbox.email);
-    const result = await findMailboxCode(mailbox, email);
-    if (!result) return res.status(404).json({ error: '未找到验证码，请稍后重试' });
-    audit(req.user.id, 'lookup', 'mail_code', account.id, `获取登录验证码 ${account.name}`);
+    recipient = expectedRecipientForAccount(account, mailbox);
+    const result = await findMailboxCode(mailbox, recipient, { requestAt, windowMinutes });
+    if (!result) {
+      audit(req.user.id, 'lookup_failed', 'mail_code', account.id, `获取登录验证码失败 ${account.name} (${account.login})，收件人 ${recipient}，${windowMinutes} 分钟内未找到 Steam 登录邮件`);
+      return res.status(404).json({ error: '未找到验证码，请稍后重试' });
+    }
+    audit(req.user.id, 'lookup', 'mail_code', account.id, `获取登录验证码 ${account.name} (${account.login})，收件人 ${recipient}，验证码 ${result.code}，文件夹 ${result.mailbox}，邮件时间 ${result.receivedAt || '-'}，主题 ${result.subject || '-'}`);
     res.json(result);
   } catch (error) {
+    audit(req.user.id, 'lookup_failed', 'mail_code', account.id, `获取登录验证码失败 ${account.name} (${account.login})${recipient ? `，收件人 ${recipient}` : ''}，原因 ${error.message || '未知错误'}`);
     res.status(error.status || 500).json({ error: error.message || '获取验证码失败，请联系管理员' });
   }
 });
@@ -1074,14 +1130,21 @@ app.post('/api/accounts/:id/mail-code', requireAuth, async (req, res) => {
 app.post('/api/accounts/:id/password-reset-link', requireAuth, async (req, res) => {
   const account = db.prepare('SELECT * FROM accounts WHERE id = ?').get(req.params.id);
   if (!account) return res.status(404).json({ error: '\u8d26\u53f7\u4e0d\u5b58\u5728' });
+  const requestAt = now();
+  const windowMinutes = mailLookupWindowMinutes();
+  let recipient = '';
   try {
     const mailbox = mailboxForAccount(account);
-    const email = normalizeEmail(mailbox.email);
-    const result = await findMailboxRecoveryLink(mailbox, email);
-    if (!result) return res.status(404).json({ error: '\u672a\u627e\u5230\u91cd\u7f6e\u5bc6\u7801\u94fe\u63a5\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5' });
-    audit(req.user.id, 'lookup', 'password_reset_link', account.id, `\u83b7\u53d6\u91cd\u7f6e\u5bc6\u7801\u94fe\u63a5 ${account.name}`);
+    recipient = expectedRecipientForAccount(account, mailbox);
+    const result = await findMailboxRecoveryLink(mailbox, recipient, { requestAt, windowMinutes });
+    if (!result) {
+      audit(req.user.id, 'lookup_failed', 'password_reset_link', account.id, `获取重置密码链接失败 ${account.name} (${account.login})，收件人 ${recipient}，${windowMinutes} 分钟内未找到 Steam 重置邮件`);
+      return res.status(404).json({ error: '\u672a\u627e\u5230\u91cd\u7f6e\u5bc6\u7801\u94fe\u63a5\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5' });
+    }
+    audit(req.user.id, 'lookup', 'password_reset_link', account.id, `获取重置密码链接 ${account.name} (${account.login})，收件人 ${recipient}，链接 ${result.link}，文件夹 ${result.mailbox}，邮件时间 ${result.receivedAt || '-'}，主题 ${result.subject || '-'}`);
     res.json(result);
   } catch (error) {
+    audit(req.user.id, 'lookup_failed', 'password_reset_link', account.id, `获取重置密码链接失败 ${account.name} (${account.login})${recipient ? `，收件人 ${recipient}` : ''}，原因 ${error.message || '未知错误'}`);
     res.status(error.status || 500).json({ error: error.message || '\u83b7\u53d6\u91cd\u7f6e\u5bc6\u7801\u94fe\u63a5\u5931\u8d25\uff0c\u8bf7\u8054\u7cfb\u7ba1\u7406\u5458' });
   }
 });
@@ -1355,6 +1418,7 @@ app.get('/api/admin/version', requireAuth, requireAdmin, async (_req, res) => {
 
 app.post('/api/admin/update', requireAuth, requireAdmin, async (req, res) => {
   try {
+    await execAsync(`git config --global --add safe.directory ${shellQuote(appDir)} || true`, { timeout: 30_000 });
     const status = await execAsync('git status --short', { cwd: appDir, timeout: 30_000 });
     if (status.stdout.trim() && !req.body.force) {
       return res.status(409).json({ error: '服务器项目目录有未提交改动，请确认后勾选强制更新', dirty: status.stdout });

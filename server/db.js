@@ -98,7 +98,8 @@ export function migrate() {
     ['siteName', '甜排班'],
     ['timezone', 'Asia/Shanghai'],
     ['defaultView', 'day'],
-    ['exportVersion', '1']
+    ['exportVersion', '1'],
+    ['mailLookupWindowMinutes', '10']
   ];
   const stmt = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
   defaults.forEach((row) => stmt.run(row));

@@ -31,7 +31,7 @@ import './styles.css';
 
 type Role = 'admin' | 'user';
 type User = { id: string; username: string; role: Role; enabled: boolean; created_at: string; can_switch?: boolean };
-type AppSettings = { siteName: string; timezone: string; defaultView: string; exportVersion?: string; auditRetentionDays?: string; auditRetentionCustomDays?: string; accountCopyFields?: string; nameScrollSeconds?: string; toastDurationSeconds?: string };
+type AppSettings = { siteName: string; timezone: string; defaultView: string; exportVersion?: string; auditRetentionDays?: string; auditRetentionCustomDays?: string; accountCopyFields?: string; nameScrollSeconds?: string; toastDurationSeconds?: string; mailLookupWindowMinutes?: string };
 type Account = { id: string; name: string; login: string; password: string; remark: string; status: string; mailbox_id?: string; sort_order?: number; created_at: string };
 type AccountName = { id: string; name: string; created_at: string };
 type Mailbox = { id: string; email: string; password: string; remark: string; client_id: string; refresh_token: string; created_at: string; updated_at: string };
@@ -57,7 +57,7 @@ type Booking = {
 type AuditLog = { id: string; actor_name?: string; action: string; entity_type: string; summary: string; created_at: string };
 type Overview = { accounts: Account[]; users: User[]; bookings: Booking[] };
 
-const defaultSettings: AppSettings = { siteName: '甜排班', timezone: 'Asia/Shanghai', defaultView: 'day', auditRetentionDays: '7', accountCopyFields: 'name,login,password,status', nameScrollSeconds: '8', toastDurationSeconds: '1' };
+const defaultSettings: AppSettings = { siteName: '甜排班', timezone: 'Asia/Shanghai', defaultView: 'day', auditRetentionDays: '7', accountCopyFields: 'name,login,password,status', nameScrollSeconds: '8', toastDurationSeconds: '1', mailLookupWindowMinutes: '10' };
 const localMockEnabled = typeof window !== 'undefined' && ['localhost', '127.0.0.1'].includes(window.location.hostname);
 
 const statusText: Record<BookingStatus, string> = {
@@ -181,7 +181,7 @@ function createMockState(): MockState {
   ];
   accounts[0].mailbox_id = mailboxes[0].id;
   return {
-    settings: { ...defaultSettings, siteName: '账号出租管理系统', exportVersion: '0.2.11', auditRetentionDays: '7' },
+    settings: { ...defaultSettings, siteName: '账号出租管理系统', exportVersion: '0.2.12', auditRetentionDays: '7' },
     users: [admin, staff],
     accounts,
     mailboxes,
@@ -324,6 +324,11 @@ const emailRegex = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
 
 function normalizeEmailText(value: string) {
   return value.trim().toLowerCase();
+}
+
+function extractFirstEmailText(value: string) {
+  const match = String(value || '').match(emailRegex);
+  return match ? normalizeEmailText(match[0]) : '';
 }
 
 function parseMailboxImportText(content: string, delimiter = '') {
@@ -471,7 +476,7 @@ async function mockApi<T>(url: string, options: RequestInit = {}): Promise<T> {
     saveMockState(state);
     return ok({ settings: state.settings });
   }
-  if (url === '/api/admin/version') return ok({ current: '0.2.11-local', latest: '0.2.11-local', hasUpdate: false, repo: 'hmbbser/paibanbiao', branch: 'main' });
+  if (url === '/api/admin/version') return ok({ current: '0.2.12-local', latest: '0.2.12-local', hasUpdate: false, repo: 'hmbbser/paibanbiao', branch: 'main' });
   if (url === '/api/admin/update' && method === 'POST') return ok({ message: '本地 UI 模式不执行真实更新' });
   if (url === '/api/admin/import' && method === 'POST') {
     if (options.body instanceof FormData) {
@@ -554,19 +559,22 @@ async function mockApi<T>(url: string, options: RequestInit = {}): Promise<T> {
     if (!account) return fail('账号不存在');
     if (!account.mailbox_id) return fail('请先在账号里选择收件邮箱');
     const mailbox = state.mailboxes.find((item) => item.id === account.mailbox_id);
-    const email = mailbox?.email || '';
+    const email = extractFirstEmailText(account.remark) || mailbox?.email || '';
     if (!mailbox) return fail('账号绑定的收件邮箱不存在，请重新选择');
     const codeChars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
     const mockCode = Array.from({ length: 5 }, () => codeChars[Math.floor(Math.random() * codeChars.length)]).join('');
-    return ok({
+    const result = {
       code: mockCode,
       email,
       recipient: email,
-      mailbox: 'INBOX',
+      mailbox: 'Junk',
       subject: 'ご利用のSteamアカウントに新しいWebまたはモバイル機器からのアクセスがありました',
-      sender: 'noreply@steampowered.com',
+      sender: 'noreply_at_steampowered_com_demo@icloud.com',
       receivedAt: new Date().toISOString()
-    });
+    };
+    addMockAudit(state, sessionUser, 'lookup', 'mail_code', `获取登录验证码 ${account.name} (${account.login})，收件人 ${email}，验证码 ${mockCode}，文件夹 ${result.mailbox}，邮件时间 ${result.receivedAt}，主题 ${result.subject}`);
+    saveMockState(state);
+    return ok(result);
   }
 
   const passwordResetMatch = url.match(/^\/api\/accounts\/([^/]+)\/password-reset-link$/);
@@ -575,17 +583,20 @@ async function mockApi<T>(url: string, options: RequestInit = {}): Promise<T> {
     if (!account) return fail('账号不存在');
     if (!account.mailbox_id) return fail('请先在账号里选择收件邮箱');
     const mailbox = state.mailboxes.find((item) => item.id === account.mailbox_id);
-    const email = mailbox?.email || '';
+    const email = extractFirstEmailText(account.remark) || mailbox?.email || '';
     if (!mailbox) return fail('账号绑定的收件邮箱不存在，请重新选择');
-    return ok({
+    const result = {
       link: 'https://help.steampowered.com/ja/wizard/VerifyCode?i=406&s=710806048765760421&m=2&c=5H64C',
       email,
       recipient: email,
-      mailbox: 'INBOX',
+      mailbox: 'Junk',
       subject: 'Steam\u30a2\u30ab\u30a6\u30f3\u30c8\u5fa9\u65e7',
-      sender: 'noreply@steampowered.com',
+      sender: 'noreply_at_steampowered_com_demo@icloud.com',
       receivedAt: new Date().toISOString()
-    });
+    };
+    addMockAudit(state, sessionUser, 'lookup', 'password_reset_link', `获取重置密码链接 ${account.name} (${account.login})，收件人 ${email}，链接 ${result.link}，文件夹 ${result.mailbox}，邮件时间 ${result.receivedAt}，主题 ${result.subject}`);
+    saveMockState(state);
+    return ok(result);
   }
 
   const mailboxMatch = url.match(/^\/api\/mailboxes\/(.+)$/);
@@ -4674,6 +4685,7 @@ function SettingsPanel({ user, settings, onSettings }: { user: User; settings: A
                 />
                 <Field label="长名称滚动速度（秒）" type="number" value={form.nameScrollSeconds || defaultSettings.nameScrollSeconds || '8'} onChange={(nameScrollSeconds) => setForm({ ...form, nameScrollSeconds })} />
                 <Field label="提示弹窗显示时间（秒）" type="number" value={form.toastDurationSeconds || defaultSettings.toastDurationSeconds || '1'} onChange={(toastDurationSeconds) => setForm({ ...form, toastDurationSeconds })} />
+                <Field label="邮件匹配时间窗口（分钟）" type="number" value={form.mailLookupWindowMinutes || defaultSettings.mailLookupWindowMinutes || '10'} onChange={(mailLookupWindowMinutes) => setForm({ ...form, mailLookupWindowMinutes })} />
                 {form.auditRetentionDays === 'custom' && (
                   <Field label="自定义保留天数" value={form.auditRetentionCustomDays || ''} onChange={(auditRetentionCustomDays) => setForm({ ...form, auditRetentionCustomDays })} />
                 )}
