@@ -1479,9 +1479,9 @@ input:focus, select:focus, textarea:focus { border-color: var(--mint); box-shado
 }
 .record-head,
 .record-row {
-  min-width: 980px;
+  min-width: 1080px;
   display: grid;
-  grid-template-columns: 1fr 1fr 1.1fr 1.8fr 110px 110px 130px;
+  grid-template-columns: 90px 150px minmax(360px, 1fr) 150px minmax(120px, 150px) 100px 110px;
   align-items: center;
   gap: 12px;
   padding: 0 14px;
@@ -1505,6 +1505,15 @@ input:focus, select:focus, textarea:focus { border-color: var(--mint); box-shado
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.record-row > strong {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.45;
+  padding-block: 8px;
 }
 .audit-head,
 .audit-row {
@@ -2712,6 +2721,19 @@ input:focus, select:focus, textarea:focus { border-color: var(--mint); box-shado
 .record-row .tag.cancelled {
   color: #c43e55 !important;
   background: #ffe5ea;
+}
+.record-table .record-row > .tag {
+  width: auto;
+  max-width: 100%;
+  min-width: 0;
+  height: auto;
+  min-height: 28px;
+  padding: 6px 10px;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+  line-height: 1.2;
 }
 .drawer {
   width: 390px;
@@ -3969,6 +3991,19 @@ input:focus, select:focus, textarea:focus { border-color: var(--mint); box-shado
     white-space: nowrap;
     color: #172b4d;
     font-weight: 800;
+  }
+  .mobile-record-card > strong,
+  .mobile-record-card dd {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+  .mobile-record-card .tag {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    line-height: 1.2;
   }
   .mobile-account-fields code {
     width: 100%;
