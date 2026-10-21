@@ -912,7 +912,7 @@ function App() {
     }
   }
 
-  if (loading || setupComplete === null) return <Splash siteName={settings.siteName} />;
+  if (loading || setupComplete === null) return <Splash />;
   if (!setupComplete) return <SetupWizard onDone={(next, nextSettings) => { setSetupComplete(true); setUser(next); applySettings(nextSettings); }} />;
   if (!user) return <Login onDone={(next, nextSettings) => { setUser(next); applySettings(nextSettings); }} />;
   return <Dashboard user={user} settings={settings} onUser={setUser} onSettings={applySettings} onLogout={() => setUser(null)} />;
@@ -923,13 +923,12 @@ function getCachedSiteName() {
   return localStorage.getItem('schedule-site-name') || defaultSettings.siteName;
 }
 
-function Splash({ siteName }: { siteName: string }) {
+function Splash() {
   return (
-    <main className="auth-shell">
-      <div className="brand-card">
-        <Sparkles />
-        <h1>{siteName || defaultSettings.siteName}</h1>
-        <p>正在加载工作空间…</p>
+    <main className="startup-loading" aria-busy="true">
+      <div className="startup-loading-status" role="status" aria-label="正在加载工作空间">
+        <div className="startup-loading-dots" aria-hidden="true"><span /><span /><span /></div>
+        <p>加载中…</p>
       </div>
     </main>
   );
