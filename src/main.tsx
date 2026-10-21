@@ -28,6 +28,7 @@ import {
   X
 } from 'lucide-react';
 import './styles.css';
+import { InboxButton } from './MailInbox';
 
 type Role = 'admin' | 'user';
 type User = { id: string; username: string; role: Role; enabled: boolean; created_at: string; can_switch?: boolean };
@@ -58,7 +59,7 @@ type AuditLog = { id: string; actor_name?: string; action: string; entity_type: 
 type Overview = { accounts: Account[]; users: User[]; bookings: Booking[] };
 
 const defaultSettings: AppSettings = { siteName: '甜排班', timezone: 'Asia/Shanghai', defaultView: 'day', auditRetentionDays: '7', accountCopyFields: 'name,login,password,status', nameScrollSeconds: '8', toastDurationSeconds: '1', mailLookupWindowMinutes: '10' };
-const localMockEnabled = typeof window !== 'undefined' && ['localhost', '127.0.0.1'].includes(window.location.hostname);
+const localMockEnabled = import.meta.env.DEV && import.meta.env.VITE_DEMO_MODE === 'true';
 
 const statusText: Record<BookingStatus, string> = {
   reserved: '预约',
@@ -2206,6 +2207,7 @@ function BookingDetailModal({
 
   async function fetchLoginCode() {
     setMailCodeLoading(true);
+    setMailCode(null);
     try {
       const result = await api<MailCodeResult>(`/api/accounts/${booking.account_id}/mail-code`, { method: 'POST' });
       setMailCode(result);
@@ -2220,6 +2222,7 @@ function BookingDetailModal({
 
   async function fetchPasswordResetLink() {
     setPasswordResetLoading(true);
+    setPasswordResetLink(null);
     try {
       const result = await api<PasswordResetLinkResult>(`/api/accounts/${booking.account_id}/password-reset-link`, { method: 'POST' });
       setPasswordResetLink(result);
@@ -2255,6 +2258,7 @@ function BookingDetailModal({
         <div className="modal-actions detail-actions account-detail-actions">
           <button className={`soft-btn login-code-action ${mailCode ? 'has-code' : ''}`} onClick={fetchLoginCode} disabled={mailCodeLoading}><Mail size={16} />{mailCodeLoading ? '获取中...' : (mailCode?.code || '获取登陆验证码')}</button>
           <button className={`soft-btn reset-link-action ${passwordResetLink ? 'has-link' : ''}`} onClick={fetchPasswordResetLink} disabled={passwordResetLoading}><KeyRound size={16} />{passwordResetLoading ? '\u83b7\u53d6\u4e2d...' : (passwordResetLink ? '\u94fe\u63a5\u5df2\u590d\u5236' : '\u91cd\u7f6e\u5bc6\u7801')}</button>
+          <InboxButton baseUrl={`/api/accounts/${booking.account_id}/messages`} api={api} className="soft-btn" />
           <button className="soft-btn" onClick={copyBooking}><Copy size={16} />复制</button>
           {canEdit && <button className="primary" onClick={onEdit}>编辑出租</button>}
           {canEdit && <button className="danger-btn" onClick={() => setDeleteOpen(true)}><Trash2 size={16} />删除</button>}
@@ -2446,6 +2450,7 @@ function AccountDetailModal({
 
   async function fetchLoginCode() {
     setMailCodeLoading(true);
+    setMailCode(null);
     try {
       const result = await api<MailCodeResult>(`/api/accounts/${account.id}/mail-code`, { method: 'POST' });
       setMailCode(result);
@@ -2460,6 +2465,7 @@ function AccountDetailModal({
 
   async function fetchPasswordResetLink() {
     setPasswordResetLoading(true);
+    setPasswordResetLink(null);
     try {
       const result = await api<PasswordResetLinkResult>(`/api/accounts/${account.id}/password-reset-link`, { method: 'POST' });
       setPasswordResetLink(result);
@@ -2524,6 +2530,7 @@ function AccountDetailModal({
         <div className="modal-actions detail-actions account-detail-actions">
           <button className={`soft-btn login-code-action ${mailCode ? 'has-code' : ''}`} onClick={fetchLoginCode} disabled={mailCodeLoading}><Mail size={16} />{mailCodeLoading ? '获取中...' : (mailCode?.code || '获取登陆验证码')}</button>
           <button className={`soft-btn reset-link-action ${passwordResetLink ? 'has-link' : ''}`} onClick={fetchPasswordResetLink} disabled={passwordResetLoading}><KeyRound size={16} />{passwordResetLoading ? '\u83b7\u53d6\u4e2d...' : (passwordResetLink ? '\u94fe\u63a5\u5df2\u590d\u5236' : '\u91cd\u7f6e\u5bc6\u7801')}</button>
+          <InboxButton baseUrl={`/api/accounts/${account.id}/messages`} api={api} className="soft-btn" />
           <button className="soft-btn" onClick={copyAccount}><Copy size={16} />复制</button>
           {onEdit && <button className="primary" onClick={onEdit}>{'\u7f16\u8f91\u8d26\u53f7'}</button>}
           {onDeleted && <button className="danger-btn" onClick={() => setDeleteOpen(true)}><Trash2 size={16} />{'\u5220\u9664'}</button>}
@@ -2913,6 +2920,7 @@ function MailboxesPanel() {
             <span>{formatDateTime(mailbox.updated_at || mailbox.created_at)}</span>
             <div className="row-actions">
               <button className="ghost-action" onClick={() => setModal(mailbox)}>编辑</button>
+              <InboxButton baseUrl={`/api/mailboxes/${mailbox.id}/messages`} api={api} />
               <DeleteButton
                 url={`/api/mailboxes/${mailbox.id}`}
                 refresh={loadMailboxes}
@@ -2943,6 +2951,7 @@ function MailboxesPanel() {
             </div>
             <div className="mobile-mailbox-actions">
               <button className="ghost-action" onClick={() => setModal(mailbox)}>编辑</button>
+              <InboxButton baseUrl={`/api/mailboxes/${mailbox.id}/messages`} api={api} />
               <DeleteButton
                 url={`/api/mailboxes/${mailbox.id}`}
                 refresh={loadMailboxes}
@@ -3274,6 +3283,7 @@ function AccountsPanel({ user, settings, accounts, refresh }: { user: User; sett
 
   async function fetchLoginCode(account: Account) {
     setMailCodeLoadingId(account.id);
+    setMailCodes((current) => { const next = { ...current }; delete next[account.id]; return next; });
     try {
       const result = await api<MailCodeResult>(`/api/accounts/${account.id}/mail-code`, { method: 'POST' });
       setMailCodes((current) => ({ ...current, [account.id]: result }));
@@ -3288,6 +3298,7 @@ function AccountsPanel({ user, settings, accounts, refresh }: { user: User; sett
 
   async function fetchPasswordResetLink(account: Account) {
     setPasswordResetLoadingId(account.id);
+    setPasswordResetLinks((current) => { const next = { ...current }; delete next[account.id]; return next; });
     try {
       const result = await api<PasswordResetLinkResult>(`/api/accounts/${account.id}/password-reset-link`, { method: 'POST' });
       setPasswordResetLinks((current) => ({ ...current, [account.id]: result }));
@@ -3508,6 +3519,7 @@ function AccountsPanel({ user, settings, accounts, refresh }: { user: User; sett
                 <KeyRound size={14} />
                 {passwordResetLoadingId === account.id ? '\u83b7\u53d6\u4e2d...' : (passwordResetLinks[account.id] ? '\u94fe\u63a5\u5df2\u590d\u5236' : '\u91cd\u7f6e\u5bc6\u7801')}
               </button>
+              <InboxButton baseUrl={`/api/accounts/${account.id}/messages`} api={api} />
               <button className="ghost-action copy-action" onClick={() => copyAccount(account)}><Copy size={14} />复制</button>
               {user.role === 'admin' && (
                 <>
@@ -3617,6 +3629,7 @@ function AccountsPanel({ user, settings, accounts, refresh }: { user: User; sett
                   <KeyRound size={14} />
                   {passwordResetLoadingId === account.id ? '\u83b7\u53d6\u4e2d...' : (passwordResetLinks[account.id] ? '\u94fe\u63a5\u5df2\u590d\u5236' : '\u91cd\u7f6e\u5bc6\u7801')}
                 </button>
+                <InboxButton baseUrl={`/api/accounts/${account.id}/messages`} api={api} />
                 <button className="ghost-action copy-action" onClick={() => copyAccount(account)}><Copy size={14} />{'\u590d\u5236'}</button>
                 {user.role === 'admin' && (
                   <>

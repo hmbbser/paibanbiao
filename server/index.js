@@ -12,6 +12,8 @@ import { promisify } from 'node:util';
 import { nanoid } from 'nanoid';
 import { fileURLToPath } from 'node:url';
 import { allRows, db, isSetupComplete, migrate, replaceAllData, TABLES } from './db.js';
+import { createMailService, createReadStateStore } from './mail-service.js';
+import { registerMailRoutes } from './mail-routes.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const execAsync = promisify(exec);
@@ -142,11 +144,6 @@ function accountStatusError(accountId) {
 }
 
 const emailPattern = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
-const emailPatternGlobal = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
-const mailboxFolders = [
-  { label: 'INBOX', graph: 'inbox', imap: 'INBOX' },
-  { label: 'Junk', graph: 'junkemail', imap: 'Junk' }
-];
 
 function normalizeEmail(value) {
   return String(value || '').trim().toLowerCase();
@@ -245,526 +242,13 @@ function mailboxForAccount(account) {
   return mailbox;
 }
 
-function stripHtml(value) {
-  return String(value || '')
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function stripHtmlLines(value) {
-  return String(value || '')
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<\s*br\s*\/?>/gi, '\n')
-    .replace(/<\/(p|div|li|tr|td|table|h[1-6])>/gi, '\n')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
-    .replace(/\r/g, '\n')
-    .split('\n')
-    .map((line) => line.replace(/\s+/g, ' ').trim())
-    .filter(Boolean)
-    .join('\n');
-}
-
-function extractVerificationCode(...values) {
-  const text = values.map((value) => stripHtml(value)).join(' ');
-  const focusedPatterns = [
-    /(?:验证码|驗證碼|校验码|安全码|动态码|登录码|登陆码|verification\s*code|security\s*code|login\s*code|passcode|otp|code)[^\d]{0,40}(\d{4,8})/i,
-    /(\d{4,8})[^\d]{0,24}(?:验证码|驗證碼|校验码|安全码|verification\s*code|security\s*code|login\s*code|passcode|otp|code)/i
-  ];
-  for (const pattern of focusedPatterns) {
-    const match = text.match(pattern);
-    if (match?.[1]) return match[1];
+const mailService = createMailService({
+  saveToken(id, refreshToken) {
+    db.prepare('UPDATE mailboxes SET refresh_token = ?, updated_at = ? WHERE id = ?').run(refreshToken, now(), id);
   }
-  const fallback = text.match(/(^|[^\d])(\d{6})(?!\d)/);
-  return fallback?.[2] || '';
-}
-
-function messageText(...values) {
-  return values.map((value) => stripHtmlLines(value)).filter(Boolean).join('\n');
-}
-
-function senderHasEmail(sender, expectedEmail) {
-  const expected = normalizeEmail(expectedEmail);
-  return (String(sender || '').match(emailPatternGlobal) || []).map(normalizeEmail).includes(expected);
-}
-
-function hasAnyPattern(value, patterns) {
-  return patterns.some((pattern) => pattern.test(value));
-}
-
-function findSteamCodeToken(value) {
-  const ignored = new Set(['STEAM', 'VALVE', 'HTTPS']);
-  const candidates = [];
-  const matches = String(value || '').matchAll(/(^|[^A-Z0-9])([A-Z0-9]{5})(?![A-Z0-9])/g);
-  for (const match of matches) {
-    const token = match[2];
-    if (!/[A-Z]/.test(token)) continue;
-    if (!ignored.has(token)) candidates.push(token);
-  }
-  return candidates.at(-1) || '';
-}
-
-const steamGuardPatterns = [
-  /Steam\s*Guard/i,
-  /Steam\s*ガード/i,
-  /ガードコード/,
-  /Steam\s*令牌/,
-  /Steam\s*安全/,
-  /验证码|驗證碼|安全代码|安全碼|登录码|登入碼|令牌码|令牌碼|动态码|動態碼/,
-  /보안\s*코드|가드\s*코드/,
-  /c[oó]digo.{0,40}(?:Steam|Guard)|(?:Steam|Guard).{0,40}c[oó]digo/i,
-  /code.{0,40}(?:Steam|Guard)|(?:Steam|Guard).{0,40}code/i,
-  /codice.{0,40}(?:Steam|Guard)|(?:Steam|Guard).{0,40}codice/i,
-  /c[oó]digo.{0,40}(?:Steam|Guard)|(?:Steam|Guard).{0,40}c[oó]digo/i,
-  /код.{0,40}(?:Steam|Guard)|(?:Steam|Guard).{0,40}код/i
-];
-
-const steamLoginPatterns = [
-  /new\s+(?:web|mobile|device)|new\s+login|login\s+attempt|access.{0,40}account/i,
-  /新しい.{0,20}(?:デバイス|機器|ログイン)|ログインしよう/,
-  /新的.{0,20}(?:设备|裝置|登录|登入)|新.{0,10}(?:Web|移动|流動)/,
-  /새.{0,20}(?:기기|로그인)|로그인.{0,20}시도/,
-  /nouveau.{0,30}(?:appareil|connexion)|tentative.{0,30}connexion/i,
-  /nuevo.{0,30}(?:dispositivo|inicio)|intento.{0,30}(?:inicio|sesión)/i,
-  /neue.{0,30}(?:gerät|anmeldung)|anmeldeversuch/i,
-  /нов.{0,30}(?:устрой|вход)|попыт.{0,30}вход/i
-];
-
-const steamRequestOriginPatterns = [
-  /リクエスト元[:：]?/,
-  /request\s*(?:origin|from)[:：]?/i,
-  /请求.{0,8}(?:来自|来源|源)|請求.{0,8}(?:來自|來源|源)|登录.{0,8}(?:地点|位置)|登入.{0,8}(?:地點|位置)/,
-  /요청.{0,8}(?:위치|출처)|로그인.{0,8}위치/,
-  /origine.{0,20}(?:demande|requête)|provenance/i,
-  /origen.{0,20}(?:solicitud|petición)|procedencia/i,
-  /origine.{0,20}richiesta/i,
-  /anforderungs.{0,12}(?:ort|ursprung)|anfrage.{0,12}(?:ort|ursprung)/i,
-  /источник.{0,20}запрос|место.{0,20}запрос/i
-];
-
-function findTokenNearLine(lines, patterns, afterLineCount) {
-  for (let index = 0; index < lines.length; index += 1) {
-    if (!hasAnyPattern(lines[index], patterns)) continue;
-    const code = findSteamCodeToken(lines.slice(index, index + afterLineCount).join('\n'));
-    if (code) return code;
-  }
-  return '';
-}
-
-function extractSteamGuardCode(message) {
-  const text = messageText(message.subject, message.text, message.html);
-  const compact = text.replace(/\s+/g, ' ');
-  const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
-  const hasGuardSignal = hasAnyPattern(compact, steamGuardPatterns);
-  const hasLoginSignal = hasAnyPattern(compact, steamLoginPatterns);
-  const hasOriginSignal = hasAnyPattern(compact, steamRequestOriginPatterns);
-  const isLoginGuardMail = /Steam/i.test(text) && hasGuardSignal && (hasLoginSignal || hasOriginSignal);
-  if (!isLoginGuardMail) return '';
-
-  const originCode = findTokenNearLine(lines, steamRequestOriginPatterns, 6);
-  if (originCode) return originCode;
-
-  const guardCode = findTokenNearLine(lines, steamGuardPatterns, 10);
-  if (guardCode) return guardCode;
-
-  for (const pattern of steamGuardPatterns) {
-    const markerIndex = compact.search(pattern);
-    if (markerIndex >= 0) {
-      const code = findSteamCodeToken(compact.slice(markerIndex, markerIndex + 480));
-      if (code) return code;
-    }
-  }
-  return findSteamCodeToken(compact.slice(0, 1200));
-}
-
-function extractMessageCode(message) {
-  const steamCode = extractSteamGuardCode(message);
-  if (steamCode) return steamCode;
-  if (senderHasEmail(message.sender, 'noreply@steampowered.com')) return '';
-  return extractVerificationCode(message.subject, message.text, message.html);
-}
-
-function decodeHtmlEntities(value) {
-  return String(value || '')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;|&apos;/gi, "'")
-    .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCharCode(parseInt(code, 16)))
-    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)));
-}
-
-function cleanUrlCandidate(value) {
-  return decodeHtmlEntities(value)
-    .trim()
-    .replace(/[)\].,;\uFF0C\u3002]+$/g, '');
-}
-
-const steamRecoveryPatterns = [
-  /account\s*(?:recovery|recover|reset)|recover.{0,30}(?:account|password|credentials)|reset.{0,30}(?:password|credentials)/i,
-  /Steam.{0,30}(?:recovery|recover|reset|password|credentials)/i,
-  /\u30a2\u30ab\u30a6\u30f3\u30c8.{0,24}(?:\u5fa9\u65e7|\u56de\u5fa9)|(?:\u5fa9\u65e7|\u56de\u5fa9).{0,24}(?:\u30a2\u30ab\u30a6\u30f3\u30c8|\u30ed\u30b0\u30a4\u30f3\u8cc7\u683c\u60c5\u5831)/,
-  /(?:\u627e\u56de|\u6062\u590d|\u6062\u5fa9|\u91cd\u7f6e|\u91cd\u8a2d).{0,24}(?:\u8d26\u53f7|\u5e10\u53f7|\u8cec\u865f|\u5e33\u865f|\u5bc6\u7801|\u5bc6\u78bc)/,
-  /(?:\uacc4\uc815|\ube44\ubc00\ubc88\ud638).{0,24}(?:\ubcf5\uad6c|\uc7ac\uc124\uc815)|(?:\ubcf5\uad6c|\uc7ac\uc124\uc815).{0,24}(?:\uacc4\uc815|\ube44\ubc00\ubc88\ud638)/,
-  /(?:recuperar|recuperaci[o\u00f3]n|restablecer|redefinir|senha|contrase[n\u00f1]a|mot de passe|r[e\u00e9]cup[e\u00e9]ration|zur[u\u00fc]cksetzen|wiederherstellung)/i
-];
-
-function steamRecoveryLinkFromCandidate(candidate) {
-  const cleaned = cleanUrlCandidate(candidate);
-  try {
-    const url = new URL(cleaned);
-    if (url.hostname.toLowerCase() !== 'help.steampowered.com') return '';
-    if (!url.pathname.includes('/wizard/VerifyCode')) return '';
-    if (!url.searchParams.has('c')) return '';
-    return url.toString();
-  } catch {
-    return '';
-  }
-}
-
-function extractSteamRecoveryLink(message) {
-  const raw = decodeHtmlEntities([message.subject, message.text, message.html].filter(Boolean).join('\n'));
-  const text = messageText(message.subject, message.text, message.html);
-  const compact = `${stripHtml(raw)} ${text}`.replace(/\s+/g, ' ');
-  const hasRecoverySignal = hasAnyPattern(compact, steamRecoveryPatterns) || /AccountRecoveryCode|wizard\/VerifyCode/i.test(raw);
-  if (!hasRecoverySignal || !/Steam/i.test(compact)) return '';
-
-  const candidates = raw.match(/https?:\/\/[^\s"'<>]+/gi) || [];
-  for (const candidate of candidates) {
-    const link = steamRecoveryLinkFromCandidate(candidate);
-    if (link) return link;
-  }
-  return '';
-}
-
-function graphAddresses(recipients = []) {
-  return recipients.map((item) => normalizeEmail(item?.emailAddress?.address)).filter(Boolean);
-}
-
-function graphHeaderValues(headers = []) {
-  const wanted = new Set(['to', 'cc', 'delivered-to', 'x-original-to', 'envelope-to', 'resent-to']);
-  return headers
-    .filter((item) => wanted.has(String(item?.name || '').toLowerCase()))
-    .map((item) => String(item?.value || ''))
-    .filter(Boolean);
-}
-
-function parsedMailHeaderValues(mail) {
-  const wanted = ['to', 'cc', 'delivered-to', 'x-original-to', 'envelope-to', 'resent-to'];
-  const values = [];
-  for (const key of wanted) {
-    const value = mail.headers?.get?.(key);
-    if (!value) continue;
-    if (typeof value === 'string') values.push(value);
-    else if (Array.isArray(value)) values.push(...value.map((item) => typeof item === 'string' ? item : item?.text || item?.address || ''));
-    else values.push(value.text || value.address || String(value));
-  }
-  for (const line of mail.headerLines || []) {
-    if (wanted.includes(String(line.key || '').toLowerCase())) values.push(String(line.line || line.value || ''));
-  }
-  return values.filter(Boolean);
-}
-
-function emailsFromText(value) {
-  return (String(value || '').match(emailPatternGlobal) || []).map(normalizeEmail).filter(Boolean);
-}
-
-function messageRecipients(message) {
-  return Array.from(new Set([
-    ...(message.to || []),
-    ...(message.cc || []),
-    ...(message.headers || []).flatMap(emailsFromText)
-  ].map(normalizeEmail).filter(Boolean)));
-}
-
-function recipientMatches(message, expectedEmail) {
-  const expected = normalizeEmail(expectedEmail);
-  return messageRecipients(message).some((email) => email === expected);
-}
-
-function withinLookupWindow(receivedAt, requestAt, windowMinutes) {
-  const receivedTime = new Date(receivedAt || '').getTime();
-  const requestTime = new Date(requestAt || '').getTime();
-  const minutes = Number(windowMinutes || 10);
-  if (!Number.isFinite(receivedTime) || !Number.isFinite(requestTime)) return false;
-  if (!Number.isFinite(minutes) || minutes <= 0) return false;
-  return Math.abs(receivedTime - requestTime) <= minutes * 60 * 1000;
-}
-
-async function requestMicrosoftToken(refreshToken, clientId, graph = false) {
-  const body = new URLSearchParams({
-    client_id: clientId,
-    grant_type: 'refresh_token',
-    refresh_token: refreshToken
-  });
-  if (graph) body.set('scope', 'https://graph.microsoft.com/.default');
-
-  const response = await fetch('https://login.microsoftonline.com/consumers/oauth2/v2.0/token', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: body.toString()
-  });
-  const text = await response.text();
-  let data = {};
-  try {
-    data = text ? JSON.parse(text) : {};
-  } catch {
-    data = {};
-  }
-  if (!response.ok) {
-    const error = new Error('邮箱授权失效，请联系管理员');
-    error.status = 502;
-    throw error;
-  }
-  return data;
-}
-
-async function getGraphAccessToken(mailbox) {
-  const data = await requestMicrosoftToken(mailbox.refresh_token, mailbox.client_id, true);
-  const scope = String(data.scope || '');
-  if (!scope.includes('https://graph.microsoft.com/Mail.Read')) {
-    const error = new Error('Graph Mail.Read 权限不可用');
-    error.code = 'GRAPH_PERMISSION_MISSING';
-    throw error;
-  }
-  return data.access_token;
-}
-
-async function fetchGraphMessages(accessToken, folder) {
-  const url = new URL(`https://graph.microsoft.com/v1.0/me/mailFolders/${folder.graph}/messages`);
-  url.searchParams.set('$top', '100');
-  url.searchParams.set('$orderby', 'receivedDateTime desc');
-  url.searchParams.set('$select', 'id,subject,bodyPreview,body,receivedDateTime,createdDateTime,from,toRecipients,ccRecipients,internetMessageHeaders');
-  const response = await fetch(url.toString(), {
-    headers: { Authorization: `Bearer ${accessToken}` }
-  });
-  if (!response.ok) {
-    const error = new Error('读取邮箱失败，请联系管理员');
-    error.status = 502;
-    throw error;
-  }
-  const data = await response.json();
-  return (data.value || []).map((item) => ({
-    id: item.id,
-    mailbox: folder.label,
-    sender: item.from?.emailAddress?.address || '',
-    subject: item.subject || '',
-    text: item.bodyPreview || '',
-    html: item.body?.content || '',
-    receivedAt: item.receivedDateTime || item.createdDateTime || '',
-    to: graphAddresses(item.toRecipients),
-    cc: graphAddresses(item.ccRecipients),
-    headers: graphHeaderValues(item.internetMessageHeaders)
-  }));
-}
-
-async function fetchImapMessages(mailbox, folder) {
-  const imapModule = await import('node-imap');
-  const parserModule = await import('mailparser');
-  const Imap = imapModule.default || imapModule;
-  const simpleParser = parserModule.simpleParser || parserModule.default?.simpleParser;
-  if (!Imap || !simpleParser) throw new Error('IMAP 依赖不可用');
-
-  const token = await requestMicrosoftToken(mailbox.refresh_token, mailbox.client_id, false);
-  const authString = Buffer.from(`user=${mailbox.email}\x01auth=Bearer ${token.access_token}\x01\x01`).toString('base64');
-
-  return new Promise((resolve, reject) => {
-    const imap = new Imap({
-      user: mailbox.email,
-      xoauth2: authString,
-      host: 'outlook.office365.com',
-      port: 993,
-      tls: true,
-      tlsOptions: { rejectUnauthorized: false }
-    });
-    const messages = [];
-    let settled = false;
-    let expected = 0;
-    let parsed = 0;
-
-    function finish(error) {
-      if (settled) return;
-      settled = true;
-      if (error) reject(error);
-      else resolve(messages.sort((a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime()));
-    }
-
-    imap.once('ready', async () => {
-      try {
-        await new Promise((openResolve, openReject) => {
-          imap.openBox(folder.imap, true, (error, box) => error ? openReject(error) : openResolve(box));
-        });
-        const ids = await new Promise((searchResolve, searchReject) => {
-          imap.search(['ALL'], (error, results) => error ? searchReject(error) : searchResolve(results || []));
-        });
-        const latest = ids.slice(-100);
-        expected = latest.length;
-        if (!expected) {
-          imap.end();
-          return;
-        }
-        const fetcher = imap.fetch(latest, { bodies: '' });
-        fetcher.on('message', (msg) => {
-          msg.on('body', (stream) => {
-            simpleParser(stream)
-              .then((mail) => {
-                messages.push({
-                  mailbox: folder.label,
-                  sender: mail.from?.text || '',
-                  subject: mail.subject || '',
-                  text: mail.text || '',
-                  html: mail.html || '',
-                  receivedAt: mail.date ? mail.date.toISOString() : '',
-                  to: (mail.to?.value || []).map((item) => normalizeEmail(item.address)).filter(Boolean),
-                  cc: (mail.cc?.value || []).map((item) => normalizeEmail(item.address)).filter(Boolean),
-                  headers: parsedMailHeaderValues(mail)
-                });
-              })
-              .catch(() => {})
-              .finally(() => {
-                parsed += 1;
-                if (parsed >= expected) imap.end();
-              });
-          });
-        });
-        fetcher.once('error', (error) => {
-          imap.end();
-          finish(error);
-        });
-      } catch (error) {
-        imap.end();
-        finish(error);
-      }
-    });
-
-    imap.once('error', finish);
-    imap.once('end', () => finish());
-    imap.connect();
-  });
-}
-
-function scanMessagesForCode(messages, expectedEmail, options = {}) {
-  const ordered = [...messages].sort((a, b) => new Date(b.receivedAt || 0).getTime() - new Date(a.receivedAt || 0).getTime());
-  for (const message of ordered) {
-    if (!recipientMatches(message, expectedEmail)) continue;
-    if (!withinLookupWindow(message.receivedAt, options.requestAt, options.windowMinutes)) continue;
-    const code = extractSteamGuardCode(message);
-    if (!code) continue;
-    return {
-      code,
-      email: normalizeEmail(expectedEmail),
-      recipient: normalizeEmail(expectedEmail),
-      mailbox: message.mailbox,
-      subject: message.subject || '',
-      sender: message.sender || '',
-      receivedAt: message.receivedAt || ''
-    };
-  }
-  return null;
-}
-
-function scanMessagesForRecoveryLink(messages, expectedEmail, options = {}) {
-  const ordered = [...messages].sort((a, b) => new Date(b.receivedAt || 0).getTime() - new Date(a.receivedAt || 0).getTime());
-  for (const message of ordered) {
-    if (!recipientMatches(message, expectedEmail)) continue;
-    if (!withinLookupWindow(message.receivedAt, options.requestAt, options.windowMinutes)) continue;
-    const link = extractSteamRecoveryLink(message);
-    if (!link) continue;
-    return {
-      link,
-      email: normalizeEmail(expectedEmail),
-      recipient: normalizeEmail(expectedEmail),
-      mailbox: message.mailbox,
-      subject: message.subject || '',
-      sender: message.sender || '',
-      receivedAt: message.receivedAt || ''
-    };
-  }
-  return null;
-}
-
-async function findMailboxCode(mailbox, expectedEmail, options = {}) {
-  const errors = [];
-  let graphCompleted = false;
-  try {
-    const graphToken = await getGraphAccessToken(mailbox);
-    for (const folder of mailboxFolders) {
-      const graphMessages = await fetchGraphMessages(graphToken, folder);
-      const found = scanMessagesForCode(graphMessages, expectedEmail, options);
-      if (found) return found;
-    }
-    graphCompleted = true;
-  } catch (error) {
-    errors.push(error);
-  }
-
-  if (graphCompleted) return null;
-
-  for (const folder of mailboxFolders) {
-    try {
-      const imapMessages = await fetchImapMessages(mailbox, folder);
-      const found = scanMessagesForCode(imapMessages, expectedEmail, options);
-      if (found) return found;
-    } catch (error) {
-      errors.push(error);
-    }
-  }
-
-  if (errors.length && errors.every((error) => error.status === 502 || error.code === 'GRAPH_PERMISSION_MISSING')) {
-    const authError = errors.find((error) => error.status === 502);
-    if (authError && errors.length > 1) throw authError;
-  }
-  return null;
-}
-
-async function findMailboxRecoveryLink(mailbox, expectedEmail, options = {}) {
-  const errors = [];
-  let graphCompleted = false;
-  try {
-    const graphToken = await getGraphAccessToken(mailbox);
-    for (const folder of mailboxFolders) {
-      const graphMessages = await fetchGraphMessages(graphToken, folder);
-      const found = scanMessagesForRecoveryLink(graphMessages, expectedEmail, options);
-      if (found) return found;
-    }
-    graphCompleted = true;
-  } catch (error) {
-    errors.push(error);
-  }
-
-  if (graphCompleted) return null;
-
-  for (const folder of mailboxFolders) {
-    try {
-      const imapMessages = await fetchImapMessages(mailbox, folder);
-      const found = scanMessagesForRecoveryLink(imapMessages, expectedEmail, options);
-      if (found) return found;
-    } catch (error) {
-      errors.push(error);
-    }
-  }
-
-  if (errors.length && errors.every((error) => error.status === 502 || error.code === 'GRAPH_PERMISSION_MISSING')) {
-    const authError = errors.find((error) => error.status === 502);
-    if (authError && errors.length > 1) throw authError;
-  }
-  return null;
-}
+});
+const readState = createReadStateStore(db);
+registerMailRoutes(app, { requireAuth, requireAdmin, db, mailService, readState, mailboxForAccount, expectedRecipientForAccount });
 
 function autoStatusForBooking(booking, current = new Date()) {
   if (booking.status === 'cancelled' || booking.status === 'ended_early') return booking.status;
@@ -1106,6 +590,7 @@ app.delete('/api/accounts/:id', requireAuth, requireAdmin, (req, res) => {
 });
 
 app.post('/api/accounts/:id/mail-code', requireAuth, async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
   const account = db.prepare('SELECT * FROM accounts WHERE id = ?').get(req.params.id);
   if (!account) return res.status(404).json({ error: '账号不存在' });
   const requestAt = now();
@@ -1114,12 +599,12 @@ app.post('/api/accounts/:id/mail-code', requireAuth, async (req, res) => {
   try {
     const mailbox = mailboxForAccount(account);
     recipient = expectedRecipientForAccount(account, mailbox);
-    const result = await findMailboxCode(mailbox, recipient, { requestAt, windowMinutes });
+    const result = await mailService.find(mailbox, recipient, { requestAt, windowMinutes });
     if (!result) {
       audit(req.user.id, 'lookup_failed', 'mail_code', account.id, `获取登录验证码失败 ${account.name} (${account.login})，收件人 ${recipient}，${windowMinutes} 分钟内未找到 Steam 登录邮件`);
-      return res.status(404).json({ error: '未找到验证码，请稍后重试' });
+      return res.status(404).json({ error: `最近 ${windowMinutes} 分钟内未找到发给 ${recipient} 的 Steam 登录验证码，请检查收件人设置，或打开收件箱查看邮件` });
     }
-    audit(req.user.id, 'lookup', 'mail_code', account.id, `获取登录验证码 ${account.name} (${account.login})，收件人 ${recipient}，验证码 ${result.code}，文件夹 ${result.mailbox}，邮件时间 ${result.receivedAt || '-'}，主题 ${result.subject || '-'}`);
+    audit(req.user.id, 'lookup', 'mail_code', account.id, `获取登录验证码 ${account.name} (${account.login})，收件人 ${recipient}，文件夹 ${result.mailbox}，邮件时间 ${result.receivedAt || '-'}`);
     res.json(result);
   } catch (error) {
     audit(req.user.id, 'lookup_failed', 'mail_code', account.id, `获取登录验证码失败 ${account.name} (${account.login})${recipient ? `，收件人 ${recipient}` : ''}，原因 ${error.message || '未知错误'}`);
@@ -1128,6 +613,7 @@ app.post('/api/accounts/:id/mail-code', requireAuth, async (req, res) => {
 });
 
 app.post('/api/accounts/:id/password-reset-link', requireAuth, async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
   const account = db.prepare('SELECT * FROM accounts WHERE id = ?').get(req.params.id);
   if (!account) return res.status(404).json({ error: '\u8d26\u53f7\u4e0d\u5b58\u5728' });
   const requestAt = now();
@@ -1136,12 +622,12 @@ app.post('/api/accounts/:id/password-reset-link', requireAuth, async (req, res) 
   try {
     const mailbox = mailboxForAccount(account);
     recipient = expectedRecipientForAccount(account, mailbox);
-    const result = await findMailboxRecoveryLink(mailbox, recipient, { requestAt, windowMinutes });
+    const result = await mailService.find(mailbox, recipient, { requestAt, windowMinutes }, 'link');
     if (!result) {
       audit(req.user.id, 'lookup_failed', 'password_reset_link', account.id, `获取重置密码链接失败 ${account.name} (${account.login})，收件人 ${recipient}，${windowMinutes} 分钟内未找到 Steam 重置邮件`);
-      return res.status(404).json({ error: '\u672a\u627e\u5230\u91cd\u7f6e\u5bc6\u7801\u94fe\u63a5\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5' });
+      return res.status(404).json({ error: `最近 ${windowMinutes} 分钟内未找到发给 ${recipient} 的 Steam 重置密码链接，请检查收件人设置，或打开收件箱查看邮件` });
     }
-    audit(req.user.id, 'lookup', 'password_reset_link', account.id, `获取重置密码链接 ${account.name} (${account.login})，收件人 ${recipient}，链接 ${result.link}，文件夹 ${result.mailbox}，邮件时间 ${result.receivedAt || '-'}，主题 ${result.subject || '-'}`);
+    audit(req.user.id, 'lookup', 'password_reset_link', account.id, `获取重置密码链接 ${account.name} (${account.login})，收件人 ${recipient}，文件夹 ${result.mailbox}，邮件时间 ${result.receivedAt || '-'}`);
     res.json(result);
   } catch (error) {
     audit(req.user.id, 'lookup_failed', 'password_reset_link', account.id, `获取重置密码链接失败 ${account.name} (${account.login})${recipient ? `，收件人 ${recipient}` : ''}，原因 ${error.message || '未知错误'}`);
@@ -1355,7 +841,7 @@ app.post('/api/admin/import', requireAuth, requireAdmin, upload.single('file'), 
     payload = JSON.parse(zip.readAsText('data.json'));
     if (manifest.app !== 'cute-schedule' || manifest.version !== 1) throw new Error('版本不匹配');
     for (const table of TABLES) {
-      if (table === 'mailboxes' && !Array.isArray(payload[table])) {
+      if (['mailboxes', 'mail_message_reads'].includes(table) && !Array.isArray(payload[table])) {
         payload[table] = [];
       }
       if (table === 'account_names' && !Array.isArray(payload[table])) {
@@ -1495,6 +981,10 @@ if (process.env.NODE_ENV === 'production') {
   app.get(/.*/, (_req, res) => res.sendFile(path.join(dist, 'index.html')));
 }
 
-app.listen(port, () => {
-  console.log(`Schedule app listening on http://localhost:${port}`);
-});
+export { app };
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  app.listen(port, () => {
+    console.log(`Schedule app listening on http://localhost:${port}`);
+  });
+}

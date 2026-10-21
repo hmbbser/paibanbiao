@@ -1,9 +1,10 @@
 {
   "name": "cute-schedule",
-  "version": "0.2.13",
+  "version": "0.2.14",
   "private": true,
   "type": "module",
   "scripts": {
+    "test": "node --test tests/*.test.js",
     "dev": "concurrently \"npm:dev:server\" \"npm:dev:client\"",
     "dev:server": "node --watch server/index.js",
     "dev:client": "vite --host 0.0.0.0",
@@ -13,11 +14,12 @@
   "dependencies": {
     "@vitejs/plugin-react": "^5.1.1",
     "adm-zip": "^0.5.16",
-    "better-sqlite3": "^12.5.0",
     "bcryptjs": "^3.0.3",
+    "better-sqlite3": "^12.5.0",
     "concurrently": "^9.2.1",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
+    "dompurify": "^3.4.17",
     "express": "^5.2.1",
     "express-session": "^1.18.2",
     "lucide-react": "^0.556.0",

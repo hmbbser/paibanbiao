@@ -760,14 +760,14 @@ input:focus, select:focus, textarea:focus { border-color: var(--mint); box-shado
   border-radius: 8px;
   padding: 7px 9px;
 }
-.account-table { grid-template-columns: 1.1fr 1.2fr 1.2fr 90px 1.3fr 140px 300px; }
-.account-table.manage { grid-template-columns: 34px 44px 1fr 1.08fr 1.08fr 116px 1fr 136px 420px; }
-.account-table.readonly { grid-template-columns: 1.1fr 1.2fr 1.2fr 90px 1.3fr 140px 300px; }
+.account-table { grid-template-columns: 1.1fr 1.2fr 1.2fr 90px 1.3fr 140px 390px; }
+.account-table.manage { grid-template-columns: 34px 44px 1fr 1.08fr 1.08fr 116px 1fr 136px 510px; }
+.account-table.readonly { grid-template-columns: 1.1fr 1.2fr 1.2fr 90px 1.3fr 140px 390px; }
 .admin-table-head.account-table.manage,
 .admin-table-row.account-table.manage {
   min-width: 1300px;
 }
-.mailbox-table-grid { grid-template-columns: minmax(250px, 1.25fr) minmax(140px, 0.75fr) minmax(170px, 0.9fr) minmax(180px, 1fr) minmax(220px, 1.15fr) 136px 120px; }
+.mailbox-table-grid { grid-template-columns: minmax(250px, 1.25fr) minmax(140px, 0.75fr) minmax(170px, 0.9fr) minmax(180px, 1fr) minmax(220px, 1.15fr) 136px 210px; }
 .mailbox-email,
 .mailbox-remark,
 .mono-value,
@@ -940,10 +940,10 @@ input:focus, select:focus, textarea:focus { border-color: var(--mint); box-shado
   gap: 6px;
 }
 .admin-account-table .account-row-actions {
-  grid-template-columns: minmax(108px, 1.1fr) minmax(92px, 0.95fr) 68px 62px 36px;
+  grid-template-columns: minmax(108px, 1.1fr) minmax(92px, 0.95fr) 80px 68px 62px 36px;
 }
 .user-account-table .account-row-actions {
-  grid-template-columns: minmax(108px, 1.1fr) minmax(92px, 0.95fr) 68px;
+  grid-template-columns: minmax(108px, 1.1fr) minmax(92px, 0.95fr) 80px 68px;
 }
 .admin-account-table .account-row-actions .ghost-action,
 .admin-account-table .account-row-actions .icon-btn,
@@ -3929,7 +3929,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--mint); box-shado
   }
   .mobile-mailbox-actions {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 42px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 42px;
     gap: 8px;
   }
   .mobile-mailbox-actions .ghost-action,
