@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { allRows, db, isSetupComplete, migrate, replaceAllData, TABLES } from './db.js';
 import { createMailService, createReadStateStore } from './mail-service.js';
 import { registerMailRoutes } from './mail-routes.js';
+import { createUpdateService, createUpdateWriteGuard, registerUpdateRoutes } from './update-service.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const execAsync = promisify(exec);
@@ -27,6 +28,9 @@ const githubRepo = process.env.GITHUB_REPO || 'hmbbser/paibanbiao';
 const githubBranch = process.env.GITHUB_BRANCH || 'main';
 const appDir = process.env.APP_DIR || '/opt/cute-schedule';
 const accountOrderSql = 'ORDER BY sort_order ASC, created_at ASC';
+const startupCommit = /^[a-f0-9]{40,64}$/.test(process.env.APP_COMMIT || '') ? process.env.APP_COMMIT : await currentGitCommit();
+const updateService = createUpdateService({ dataDir, dbPath: db.name, appDir, githubBranch, appVersion, currentCommit: startupCommit });
+const updateWrites = createUpdateWriteGuard(updateService.store);
 
 function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
@@ -62,7 +66,12 @@ async function remoteGitCommit() {
 
 migrate();
 
+app.get('/api/health', (_req, res) => {
+  res.set('Cache-Control', 'no-store').json({ ok: true, version: appVersion, commit: startupCommit, activeWrites: updateWrites.activeWrites });
+});
+
 app.use(cors({ origin: true, credentials: true }));
+app.use('/api', updateWrites.middleware);
 app.use(cookieParser());
 app.use(express.json({ limit: '2mb' }));
 app.use(
@@ -875,8 +884,8 @@ app.get('/api/admin/version', requireAuth, requireAdmin, async (_req, res) => {
   try {
     const url = `https://raw.githubusercontent.com/${githubRepo}/${githubBranch}/package.json`;
     const [response, localCommit, remoteCommit] = await Promise.all([
-      fetch(url, { cache: 'no-store' }),
-      currentGitCommit(),
+      fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(30_000) }),
+      Promise.resolve(startupCommit),
       remoteGitCommit()
     ]);
     if (!response.ok) throw new Error(`GitHub 返回 ${response.status}`);
@@ -902,68 +911,7 @@ app.get('/api/admin/version', requireAuth, requireAdmin, async (_req, res) => {
   }
 });
 
-app.post('/api/admin/update', requireAuth, requireAdmin, async (req, res) => {
-  try {
-    await execAsync(`git config --global --add safe.directory ${shellQuote(appDir)} || true`, { timeout: 30_000 });
-    const status = await execAsync('git status --short', { cwd: appDir, timeout: 30_000 });
-    if (status.stdout.trim() && !req.body.force) {
-      return res.status(409).json({ error: '服务器项目目录有未提交改动，请确认后勾选强制更新', dirty: status.stdout });
-    }
-    const quotedAppDir = shellQuote(appDir);
-    const quotedBranch = shellQuote(githubBranch);
-    const composeCommand = `
-      cd "$UPDATE_DIR"
-      if docker compose version >/dev/null 2>&1; then
-        docker compose --project-directory "$UPDATE_DIR" -f "$UPDATE_DIR/docker-compose.yml" up -d --build --force-recreate --remove-orphans
-      elif command -v docker-compose >/dev/null 2>&1; then
-        docker-compose --project-directory "$UPDATE_DIR" -f "$UPDATE_DIR/docker-compose.yml" up -d --build --force-recreate --remove-orphans
-      else
-        echo "docker compose/docker-compose 不可用" >&2
-        exit 1
-      fi
-    `;
-    const command = `
-      set -eu
-      APP_DIR=${quotedAppDir}
-      BRANCH=${quotedBranch}
-      UPDATE_DIR="$APP_DIR"
-      cd "$APP_DIR"
-      git config --global --add safe.directory "$APP_DIR" || true
-      git fetch origin "$BRANCH"
-      git reset --hard "origin/$BRANCH"
-      if command -v docker >/dev/null 2>&1 && [ -S /var/run/docker.sock ]; then
-        SELF_ID="$(cat /etc/hostname 2>/dev/null || true)"
-        SELF_IMAGE="$(docker inspect -f '{{.Config.Image}}' "$SELF_ID" 2>/dev/null || true)"
-        HOST_APP_DIR="$(docker inspect -f '{{range .Mounts}}{{printf "%s|%s\n" .Destination .Source}}{{end}}' "$SELF_ID" 2>/dev/null | while IFS='|' read -r dest source; do if [ "$dest" = "$APP_DIR" ]; then printf '%s' "$source"; break; fi; done || true)"
-        if [ -z "$HOST_APP_DIR" ]; then
-          HOST_APP_DIR="$APP_DIR"
-        fi
-        if [ -n "$SELF_IMAGE" ]; then
-          docker rm -f cute-schedule-updater >/dev/null 2>&1 || true
-          docker run -d --name cute-schedule-updater \\
-            -v /var/run/docker.sock:/var/run/docker.sock \\
-            -v "$HOST_APP_DIR":"$HOST_APP_DIR" \\
-            -w "$HOST_APP_DIR" \\
-            -e APP_DIR="$APP_DIR" \\
-            -e UPDATE_DIR="$HOST_APP_DIR" \\
-            -e GITHUB_BRANCH="$BRANCH" \\
-            "$SELF_IMAGE" sh -lc 'set -eu; cd "$UPDATE_DIR"; git config --global --add safe.directory "$UPDATE_DIR" || true; git fetch origin "$GITHUB_BRANCH"; git reset --hard "origin/$GITHUB_BRANCH"; ${composeCommand}'
-          exit 0
-        fi
-      fi
-      ${composeCommand}
-    `;
-    audit(req.user.id, 'update_start', 'system', 'version', '开始从 GitHub 拉取更新并重启服务');
-    res.json({ ok: true, message: '已开始更新，服务会自动重建并重启，请稍后刷新页面。' });
-    exec(command, { cwd: appDir, timeout: 1000 * 60 * 20 }, (error, stdout, stderr) => {
-      if (error) {
-        console.error('self update failed', error, stdout, stderr);
-      }
-    });
-  } catch (error) {
-    res.status(500).json({ error: `启动更新失败：${error.message}` });
-  }
-});
+registerUpdateRoutes(app, { service: updateService, requireAuth, requireAdmin, audit });
 
 function compareVersion(a, b) {
   const pa = String(a).split('.').map((x) => Number.parseInt(x, 10) || 0);

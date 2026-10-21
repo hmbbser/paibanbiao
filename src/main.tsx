@@ -29,6 +29,7 @@ import {
 } from 'lucide-react';
 import './styles.css';
 import { InboxButton } from './MailInbox';
+import { UpdatePanel } from './UpdatePanel';
 
 type Role = 'admin' | 'user';
 type User = { id: string; username: string; role: Role; enabled: boolean; created_at: string; can_switch?: boolean };
@@ -478,7 +479,8 @@ async function mockApi<T>(url: string, options: RequestInit = {}): Promise<T> {
     return ok({ settings: state.settings });
   }
   if (url === '/api/admin/version') return ok({ current: '0.2.13-local', latest: '0.2.13-local', hasUpdate: false, repo: 'hmbbser/paibanbiao', branch: 'main' });
-  if (url === '/api/admin/update' && method === 'POST') return ok({ message: '本地 UI 模式不执行真实更新' });
+  if (url === '/api/admin/update/status') return ok({ job: null });
+  if (url === '/api/admin/update' && method === 'POST') return fail('本地演示模式不执行真实更新，请在服务器上操作');
   if (url === '/api/admin/import' && method === 'POST') {
     if (options.body instanceof FormData) {
       const file = options.body.get('file');
@@ -4585,8 +4587,6 @@ function BackupPanel({ settings }: { settings: AppSettings }) {
 
 function SettingsPanel({ user, settings, onSettings }: { user: User; settings: AppSettings; onSettings: (settings: AppSettings) => void }) {
   const [form, setForm] = useState(settings);
-  const [version, setVersion] = useState<{ current: string; latest: string; hasUpdate: boolean; repo: string; branch: string } | null>(null);
-  const [force, setForce] = useState(false);
   const [message, setMessage] = useState('');
   const messageTone = message.includes('已保存') || message.includes('最新') || message.includes('成功') ? 'success' : 'danger';
   const selectedCopyFields = (form.accountCopyFields || defaultSettings.accountCopyFields || '')
@@ -4618,34 +4618,12 @@ function SettingsPanel({ user, settings, onSettings }: { user: User; settings: A
     }
   }
 
-  async function checkVersion() {
-    setMessage('');
-    try {
-      const res = await api<{ current: string; latest: string; hasUpdate: boolean; repo: string; branch: string }>('/api/admin/version');
-      setVersion(res);
-      setMessage(res.hasUpdate ? '发现新版本，可以一键更新' : '当前已经是最新版本');
-    } catch (err) {
-      setMessage((err as Error).message);
-    }
-  }
-
   function toggleCopyField(key: string) {
     const set = new Set(selectedCopyFields);
     if (set.has(key)) set.delete(key);
     else set.add(key);
     const ordered = accountCopyFieldOptions.map((item) => item.key).filter((item) => set.has(item));
     setForm({ ...form, accountCopyFields: ordered.join(',') });
-  }
-
-  async function runUpdate() {
-    if (!confirm('更新会从 GitHub 拉取最新代码并重建容器，过程中服务会短暂重启。确认继续吗？')) return;
-    setMessage('');
-    try {
-      const res = await api<{ message: string }>('/api/admin/update', { method: 'POST', body: JSON.stringify({ force }) });
-      setMessage(res.message);
-    } catch (err) {
-      setMessage((err as Error).message);
-    }
   }
 
   return (
@@ -4719,28 +4697,7 @@ function SettingsPanel({ user, settings, onSettings }: { user: User; settings: A
           </form>
         )}
 
-        {user.role === 'admin' && (
-          <div className="settings-card settings-form">
-            <RefreshCw />
-            <div>
-              <h3>版本更新</h3>
-              <p>从 GitHub 仓库检测最新版本，不一致时可一键拉取代码、重建并重启服务。</p>
-              <div className="version-box">
-                <span>当前版本：{version?.current || '未检测'}</span>
-                <span>最新版本：{version?.latest || '未检测'}</span>
-                <span>仓库：{version?.repo || 'hmbbser/paibanbiao'}</span>
-              </div>
-              <label className="check-row">
-                <input type="checkbox" checked={force} onChange={(event) => setForce(event.target.checked)} />
-                强制更新服务器目录未提交改动
-              </label>
-              <div className="card-actions">
-                <button type="button" className="soft-btn" onClick={checkVersion}>检测版本</button>
-                <button type="button" className="primary" onClick={runUpdate} disabled={Boolean(version && !version.hasUpdate && !force)}>一键更新</button>
-              </div>
-            </div>
-          </div>
-        )}
+        {user.role === 'admin' && <UpdatePanel request={api} />}
 
         <NoticeToast message={message} tone={messageTone} />
       </div>

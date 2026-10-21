@@ -54,6 +54,13 @@ npm run build
 - 手动阅读每个文件夹最近 100 封，不受验证码查询时间窗口限制。自动提取沿用设置中的时间范围（默认 10 分钟），查询不到时提示收件地址和时间范围；任一文件夹读取不完整时会报错，避免返回可能过时的验证码。
 - Graph 不可用时回退 IMAP，并支持本地化垃圾箱名称。邮件 HTML 经过清理和隔离显示，外部图片默认不加载。
 
+## 0.2.15 一键更新日志
+
+- 设置中的版本更新显示阶段进度、带时间的执行日志、失败原因和服务器备份路径，可下载已显示的日志。
+- 更新状态与日志保存在数据目录的 `updates/` 中；页面刷新、重新登录或服务重启后可继续查看。构建和切换使用独立更新容器执行，避免主服务重启时中断任务。
+- 重复点击不会创建并行更新。构建期间旧服务继续运行，切换前暂停可能写入数据的请求并等待现有请求完成，再生成 SQLite 快照和可导入的 `data-backup.zip`。
+- 新容器的版本、Git 提交与原有数据记录检查通过后才显示完成；切换失败时尝试恢复原镜像。数据库不会在失败后自动覆盖，请根据日志和备份确认恢复方式。
+
 ## 功能范围
 
 - 管理员：账号、用户、出租记录、审计日志、完整导入导出。
@@ -73,12 +80,13 @@ Docker Compose 会把 SQLite 数据库存放在 `schedule-data` volume 中。容
 
 后台“设置 -> 版本更新”会读取 GitHub 仓库 `hmbbser/paibanbiao` 的 `package.json` 版本号。
 
-当远程版本高于当前版本时，管理员可以点击“一键更新”。系统会在服务器执行：
+远程版本或 Git 提交有变化时，管理员可以点击“一键更新”。系统会备份当前源码与配置，获取目标提交并构建镜像，然后备份数据库、切换服务并检查更新结果。构建可能需要十几分钟，可在页面中查看执行日志。
 
 ```bash
 git fetch origin main
 git reset --hard origin/main
-docker compose up -d --build
+docker compose build --build-arg APP_COMMIT=<目标提交> schedule
+docker compose up -d --no-build --force-recreate --no-deps schedule
 ```
 
 为了让容器能更新宿主机代码并重启服务，`docker-compose.yml` 已挂载：
@@ -91,3 +99,7 @@ docker compose up -d --build
 ```bash
 https://github.com/hmbbser/paibanbiao.git
 ```
+
+一键更新支持 Linux Docker Compose 部署，并兼容旧版 `docker-compose`。本地开发环境会显示明确的失败原因。
+
+服务器备份位于页面显示的 `updates/<任务编号>/backup/`，包含 `database.sqlite`、可通过“备份 → 导入”恢复的 `data-backup.zip`、`source.tar.gz`、Compose 配置和原镜像恢复信息。该目录是更新容器内的数据路径，默认存储在 `schedule-data` volume 中。备份与更新日志由服务器保留；下载日志按钮只下载最近显示的日志。
