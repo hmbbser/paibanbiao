@@ -30,6 +30,7 @@ import {
 import './styles.css';
 import { InboxButton } from './MailInbox';
 import { UpdatePanel } from './UpdatePanel';
+import './workspace.css';
 
 type Role = 'admin' | 'user';
 type User = { id: string; username: string; role: Role; enabled: boolean; created_at: string; can_switch?: boolean };
@@ -928,7 +929,7 @@ function Splash({ siteName }: { siteName: string }) {
       <div className="brand-card">
         <Sparkles />
         <h1>{siteName || defaultSettings.siteName}</h1>
-        <p>正在整理今天的可爱时间线...</p>
+        <p>正在加载工作空间…</p>
       </div>
     </main>
   );
@@ -997,6 +998,14 @@ function Login({ onDone }: { onDone: (user: User, settings: AppSettings) => void
 function AuthPanel({ title, subtitle, children }: { title: string; subtitle: string; children: React.ReactNode }) {
   return (
     <main className="auth-shell">
+      <header className="auth-brand"><CalendarDays size={20} /><strong>{getCachedSiteName()}</strong></header>
+      <div className="auth-layout">
+      <div className="auth-intro">
+        <span className="auth-eyebrow">账号租借 · 排班管理</span>
+        <h2>每个账号，<br />每段时间，清楚安排。</h2>
+        <p>管理账号、安排出租、读取邮件。<br />在一个工作空间里，处理每天的工作。</p>
+        <div className="auth-features"><span><CalendarDays size={16} />出租时间线</span><span><Mail size={16} />邮件收件箱</span><span><DatabaseBackup size={16} />备份与恢复</span></div>
+      </div>
       <section className="auth-panel">
         <div className="logo-bubble">
           <CalendarDays />
@@ -1006,6 +1015,8 @@ function AuthPanel({ title, subtitle, children }: { title: string; subtitle: str
         <p>{subtitle}</p>
         {children}
       </section>
+      </div>
+      <footer className="auth-footer">{getCachedSiteName()} · 账号与排班工作空间</footer>
     </main>
   );
 }
@@ -1024,6 +1035,7 @@ function Dashboard({
   onLogout: () => void;
 }) {
   const [active, setActive] = useState('timeline');
+  const [navigationOpen, setNavigationOpen] = useState(false);
   const [overview, setOverview] = useState<Overview>({ accounts: [], users: [], bookings: [] });
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editing, setEditing] = useState<Booking | null>(null);
@@ -1032,17 +1044,24 @@ function Dashboard({
   const [viewing, setViewing] = useState<Booking | null>(null);
   const [query, setQuery] = useState('');
   const [error, setError] = useState('');
-  const [pageLoading, setPageLoading] = useState(false);
 
   useEffect(() => {
     refresh();
   }, []);
 
   useEffect(() => {
-    setPageLoading(true);
-    const timer = window.setTimeout(() => setPageLoading(false), 500);
-    return () => window.clearTimeout(timer);
-  }, [active]);
+    if (user.role !== 'admin' && ['mailboxes', 'users', 'backup', 'settings'].includes(active)) setActive('timeline');
+  }, [user.role, active]);
+
+  useEffect(() => { window.scrollTo({ top: 0 }); }, [active]);
+
+  useEffect(() => {
+    if (!navigationOpen) return;
+    function close(event: KeyboardEvent) { if (event.key === 'Escape') setNavigationOpen(false); }
+    window.addEventListener('keydown', close);
+    return () => window.removeEventListener('keydown', close);
+  }, [navigationOpen]);
+
 
   useEffect(() => {
     if (!error) return;
@@ -1067,6 +1086,16 @@ function Dashboard({
   }
 
   const visibleNav = navItems.filter((item) => (!item.admin || user.role === 'admin') && (item.id !== 'settings' || user.role === 'admin'));
+  const pageInfo: Record<string, { title: string; description: string }> = {
+    timeline: { title: '出租时间线', description: '查看账号安排、出租状态与即将到期的记录。' },
+    accounts: { title: '账号管理', description: '管理可出租账号、关联邮箱与账号状态。' },
+    mailboxes: { title: '邮箱管理', description: '管理收件邮箱，读取验证码、重置链接与邮件。' },
+    users: { title: '用户管理', description: '管理登录用户、角色与操作权限。' },
+    records: { title: '出租与操作记录', description: '查询出租明细，追踪账号和用户的操作。' },
+    backup: { title: '备份与恢复', description: '导出完整数据，或从备份恢复工作空间。' },
+    settings: { title: '系统设置', description: '管理站点外观、运行偏好与版本更新。' }
+  };
+  function navigate(id: string) { setActive(id); setNavigationOpen(false); }
   const filteredBookings = overview.bookings.filter((booking) => {
     const text = `${booking.account_name} ${booking.account_login} ${booking.renter_name} ${booking.renter_contact} ${booking.operator_name} ${booking.remark}`.toLowerCase();
     return text.includes(query.toLowerCase());
@@ -1078,56 +1107,55 @@ function Dashboard({
   });
 
   return (
-    <div className="app-shell" style={{ '--toast-duration': `${getToastDurationMs(settings)}ms` } as React.CSSProperties}>
-      <aside className="sidebar">
-        <div className="brand">
-          <div className="brand-mark">
-            <CalendarDays size={18} />
-            <Sparkles size={11} />
-          </div>
-          <span>{settings.siteName || '甜排班'}</span>
-        </div>
-        <nav>
+    <div className={`app-shell ${navigationOpen ? 'navigation-open' : ''}`} style={{ '--toast-duration': `${getToastDurationMs(settings)}ms` } as React.CSSProperties}>
+      <header className="topbar">
+        <button className="icon-btn mobile-menu" aria-label={navigationOpen ? '关闭导航' : '打开导航'} aria-expanded={navigationOpen} onClick={() => setNavigationOpen(!navigationOpen)}><Menu size={19} /></button>
+        <button className="brand brand-home" onClick={() => navigate('timeline')} aria-label="返回出租时间线"><span className="brand-mark"><CalendarDays size={20} /></span><span>{settings.siteName || '甜排班'}</span></button>
+        <div className="topbar-spacer" />
+        <span className="workspace-status"><i />工作空间</span>
+        {(user.role === 'admin' || user.can_switch) ? <UserSwitcher user={user} users={overview.users} onSwitchUser={switchUser} /> : <span className="header-user">{user.username}</span>}
+        <button className="icon-btn" onClick={() => void refresh()} aria-label="刷新数据" title="刷新数据"><RefreshCw size={17} /></button>
+        <button className="icon-btn" onClick={logout} aria-label="退出登录" title="退出登录"><LogOut size={17} /></button>
+      </header>
+      {navigationOpen && <button className="navigation-backdrop" aria-label="关闭导航" onClick={() => setNavigationOpen(false)} />}
+      <aside className="sidebar" aria-label="工作空间导航">
+        <span className="nav-caption">工作空间</span>
+        <nav aria-label="主导航">
           {visibleNav.map((item) => {
             const Icon = item.icon;
             return (
-              <button key={item.id} className={active === item.id ? 'active' : ''} onClick={() => setActive(item.id)}>
+              <button key={item.id} className={active === item.id ? 'active' : ''} onClick={() => navigate(item.id)} aria-current={active === item.id ? 'page' : undefined} title={item.label}>
                 <Icon size={18} />
                 <span>{item.label}</span>
+                {active === item.id && <ChevronRight className="nav-chevron" size={14} />}
               </button>
             );
           })}
         </nav>
+        {(user.role === 'admin' || user.can_switch) && <div className="sidebar-user-switch"><UserSwitcher user={user} users={overview.users} onSwitchUser={switchUser} /></div>}
+        <div className="sidebar-note"><DatabaseBackup size={16} /><span>账号与排班数据保存在你的服务器。备份、恢复和更新集中管理。</span></div>
         <div className="sidebar-footer">
-          <div className="avatar-bubble"><Sparkles size={18} /></div>
+          <div className="avatar-bubble">{user.username.slice(0, 1).toUpperCase()}</div>
           <div>
             <strong>{user.username}</strong>
             <span>{user.role === 'admin' ? '管理员' : '普通用户'}</span>
           </div>
-          <button className="icon-btn" onClick={logout}><LogOut size={15} /></button>
+          <button className="icon-btn" onClick={logout} aria-label="退出登录"><LogOut size={15} /></button>
         </div>
       </aside>
 
       <main className="workspace">
-        <header className="topbar">
-          <button className="icon-btn mobile-menu"><Menu size={18} /></button>
-          <div className="topbar-spacer" />
-          <div className="user-pill">{user.role === 'admin' ? '管理员' : '普通用户'} · {user.username}</div>
-          <button className="icon-btn" onClick={logout}><LogOut size={17} /></button>
-        </header>
-
         <section className="content">
+          <div className="workspace-heading"><div><h1>{pageInfo[active]?.title}</h1><p>{pageInfo[active]?.description}</p></div><span className="page-context"><Clock3 size={14} />{settings.timezone || 'Asia/Shanghai'}</span></div>
           <NoticeToast message={error} tone="danger" />
           {active === 'timeline' && (
             <Timeline
               user={user}
               settings={settings}
-              users={overview.users}
               accounts={filteredAccounts}
               bookings={filteredBookings}
               query={query}
               onQuery={setQuery}
-              onSwitchUser={switchUser}
               onViewAccount={(account) => setAccountViewing(account)}
               onEditAccount={(account) => setAccountEditing(account)}
               onNew={() => { setEditing(null); setDrawerOpen(true); }}
@@ -1149,11 +1177,10 @@ function Dashboard({
           )}
           {active === 'backup' && user.role === 'admin' && <BackupPanel settings={settings} />}
           {active === 'settings' && <SettingsPanel user={user} settings={settings} onSettings={onSettings} />}
-          {pageLoading && <div className="page-loader"><span /></div>}
         </section>
       </main>
 
-      <MobileTabs active={active} setActive={setActive} isAdmin={user.role === 'admin'} />
+      <MobileTabs active={active} setActive={navigate} isAdmin={user.role === 'admin'} onMore={() => setNavigationOpen(true)} />
       {drawerOpen && (
         <BookingDrawer
           user={user}
@@ -1220,12 +1247,10 @@ function Dashboard({
 function Timeline({
   user,
   settings,
-  users,
   accounts,
   bookings,
   query,
   onQuery,
-  onSwitchUser,
   onViewAccount,
   onEditAccount,
   onNew,
@@ -1233,12 +1258,10 @@ function Timeline({
 }: {
   user: User;
   settings: AppSettings;
-  users: User[];
   accounts: Account[];
   bookings: Booking[];
   query: string;
   onQuery: (value: string) => void;
-  onSwitchUser: (userId: string) => void;
   onViewAccount: (account: Account) => void;
   onEditAccount: (account: Account) => void;
   onNew: () => void;
@@ -1384,12 +1407,9 @@ function Timeline({
           <Search size={16} />
           <input value={query} onChange={(event) => onQuery(event.target.value)} placeholder="搜索账号 / 租客 / 手机号" />
         </div>
-        {(user.role === 'admin' || user.can_switch) && (
-          <UserSwitcher user={user} users={users} onSwitchUser={onSwitchUser} />
-        )}
         <button type="button" className="primary" onClick={onNew}>
           <Plus size={16} />
-          新建出租 ✨
+          新建出租
         </button>
       </div>
       <div className="metrics">
@@ -1416,7 +1436,7 @@ function Timeline({
           aria-pressed={accountRailOpen}
         >
           <KeyRound size={14} />
-          <span>{accountRailOpen ? '收起账号小窝' : '展开账号小窝'}</span>
+          <span>{accountRailOpen ? '收起账号列表' : '展开账号列表'}</span>
         </button>
       )}
 
@@ -1435,9 +1455,9 @@ function Timeline({
           onClick={() => {
             if (accountRailEnabled) setAccountRailOpen((value) => !value);
           }}
-          aria-label={accountRailOpen ? '收起账号小窝' : '展开账号小窝'}
+          aria-label={accountRailOpen ? '收起账号列表' : '展开账号列表'}
         >
-          <span>账号小窝</span>
+          <span>账号列表</span>
           {accountRailEnabled && <ChevronRight size={13} />}
         </button>
         {Array.from({ length: 24 }, (_, index) => (
@@ -1496,7 +1516,7 @@ function Timeline({
                 {rowBookings.length === 0 && (
                   <div className={`empty-slot ${accountActive ? '' : 'disabled'}`}>
                     <Sparkles size={14} />
-                    {accountActive ? '今天还很空，可以安排啦' : '账号已停用，不能安排'}
+                    {accountActive ? '暂无出租安排' : '账号已停用，不能安排'}
                   </div>
                 )}
                 {rowBookings.map((booking) => {
@@ -1801,9 +1821,10 @@ function assignBookingLanes(bookings: Booking[]) {
 }
 
 function Metric({ label, value, tone, detail }: { label: string; value: number; tone: string; detail: string }) {
+  const Icon = tone === 'mint' ? CalendarDays : tone === 'amber' ? Clock3 : tone === 'coral' ? FileClock : KeyRound;
   return (
     <div className={`metric ${tone}`}>
-      <Sparkles size={16} />
+      <Icon size={16} />
       <span>{label}</span>
       <strong>{value}</strong>
       <em>{detail}</em>
@@ -1990,7 +2011,7 @@ function BookingDrawer({
       <section className="admin-modal booking-modal" onClick={(event) => event.stopPropagation()}>
         <div className="modal-title">
           <div>
-            <span>出租小表单</span>
+            <span>出租信息</span>
             <h2>{booking ? '编辑出租' : '新建出租'}</h2>
           </div>
           <button className="icon-btn" onClick={onClose}><X size={18} /></button>
@@ -3439,12 +3460,10 @@ function AccountsPanel({ user, settings, accounts, refresh }: { user: User; sett
               <input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} aria-label="选择当前列表账号" />
             </label>
           )}
-          <span>名称</span>
-          <span>账号</span>
-          <span>密码</span>
+          <span>账号信息</span>
+          <span>密码与时间</span>
           <span>状态</span>
           <span>备注</span>
-          <span>创建时间</span>
           <span>操作</span>
         </div>
         {pagedAccounts.items.map((account) => (
@@ -3480,9 +3499,8 @@ function AccountsPanel({ user, settings, accounts, refresh }: { user: User; sett
                 <input type="checkbox" checked={selectedIds.has(account.id)} onChange={() => toggleSelected(account.id)} aria-label={`选择${account.name}`} />
               </label>
             )}
-            <CopyValue account={account} value={account.name} className="copy-value-name" />
-            <CopyValue account={account} value={account.login} />
-            <CopyValue account={account} value={account.password} className="copy-value-code" />
+            <div className="account-identity"><CopyValue account={account} value={account.name} className="copy-value-name" /><CopyValue account={account} value={account.login} /><small>账号</small></div>
+            <div className="account-credentials"><CopyValue account={account} value={account.password} className="copy-value-code" /><small>创建 {formatDateTime(account.created_at)}</small></div>
             <div className="status-toggle-cell">
               <span className={`status-pill ${account.status === 'active' ? 'ok' : 'muted'}`}>{account.status === 'active' ? '正常' : '停用'}</span>
               {user.role === 'admin' && (
@@ -3499,7 +3517,6 @@ function AccountsPanel({ user, settings, accounts, refresh }: { user: User; sett
               )}
             </div>
             <CopyValue account={account} value={account.remark || '-'} />
-            <span>{formatDateTime(account.created_at)}</span>
             <div className="row-actions account-row-actions">
               <button
                 type="button"
@@ -4587,6 +4604,7 @@ function BackupPanel({ settings }: { settings: AppSettings }) {
 
 function SettingsPanel({ user, settings, onSettings }: { user: User; settings: AppSettings; onSettings: (settings: AppSettings) => void }) {
   const [form, setForm] = useState(settings);
+  const [category, setCategory] = useState('appearance');
   const [message, setMessage] = useState('');
   const messageTone = message.includes('已保存') || message.includes('最新') || message.includes('成功') ? 'success' : 'danger';
   const selectedCopyFields = (form.accountCopyFields || defaultSettings.accountCopyFields || '')
@@ -4612,96 +4630,63 @@ function SettingsPanel({ user, settings, onSettings }: { user: User; settings: A
       const nextSettings = { ...settings, ...res.settings };
       onSettings(nextSettings);
       document.title = nextSettings.siteName || '甜排班';
-      setMessage('系统基本信息已保存');
-    } catch (err) {
-      setMessage((err as Error).message);
-    }
+      setMessage('设置已保存');
+    } catch (err) { setMessage((err as Error).message); }
   }
 
   function toggleCopyField(key: string) {
-    const set = new Set(selectedCopyFields);
-    if (set.has(key)) set.delete(key);
-    else set.add(key);
-    const ordered = accountCopyFieldOptions.map((item) => item.key).filter((item) => set.has(item));
-    setForm({ ...form, accountCopyFields: ordered.join(',') });
+    const fields = new Set(selectedCopyFields);
+    if (fields.has(key)) fields.delete(key); else fields.add(key);
+    setForm({ ...form, accountCopyFields: accountCopyFieldOptions.map(item => item.key).filter(item => fields.has(item)).join(',') });
   }
 
+  const categories = [
+    { id: 'appearance', label: '站点外观', icon: Settings },
+    { id: 'preferences', label: '运行与日志', icon: Clock3 },
+    { id: 'copy', label: '账号复制', icon: Copy },
+    { id: 'update', label: '版本更新', icon: RefreshCw },
+    { id: 'profile', label: '当前用户', icon: Users }
+  ];
   return (
-    <Panel title="我的设置">
-      <div className="settings-layout">
-        <div className="settings-card">
-          <Archive />
-          <div>
-            <h3>{user.username}</h3>
-            <p>{user.role === 'admin' ? '管理员拥有全部系统权限。' : '普通用户可查看全部时间线，只能维护自己创建的记录。'}</p>
-          </div>
-        </div>
-
-        {user.role === 'admin' && (
-          <form className="settings-card settings-form" onSubmit={saveSettings}>
-            <Settings />
-            <div>
-              <h3>系统基本信息</h3>
-              <p>这里控制左上角系统名字和浏览器标题。</p>
-              <div className="settings-fields">
-                <Field label="系统名字" value={form.siteName || ''} onChange={(siteName) => setForm({ ...form, siteName })} />
-                <FancySelect
-                  label="时区"
-                  value={form.timezone || 'Asia/Shanghai'}
-                  options={[
-                    { value: 'Asia/Shanghai', label: 'Asia/Shanghai', hint: '中国时间' },
-                    { value: 'UTC', label: 'UTC', hint: '协调世界时' }
-                  ]}
-                  onChange={(timezone) => setForm({ ...form, timezone })}
-                />
-                <FancySelect
-                  label="默认视图"
-                  value={form.defaultView || 'day'}
-                  options={[
-                    { value: 'day', label: '日视图', hint: '按天查看排班' },
-                    { value: 'week', label: '周视图', hint: '按周查看排班' }
-                  ]}
-                  onChange={(defaultView) => setForm({ ...form, defaultView })}
-                />
-                <FancySelect
-                  label="记录删除规则"
-                  value={form.auditRetentionDays || '7'}
-                  options={[
-                    { value: '3', label: '每 3 天清理一次' },
-                    { value: '7', label: '每 7 天清理一次' },
-                    { value: '30', label: '每 30 天清理一次' },
-                    { value: 'custom', label: '自定义时间段' }
-                  ]}
-                  onChange={(auditRetentionDays) => setForm({ ...form, auditRetentionDays })}
-                />
-                <Field label="长名称滚动速度（秒）" type="number" value={form.nameScrollSeconds || defaultSettings.nameScrollSeconds || '8'} onChange={(nameScrollSeconds) => setForm({ ...form, nameScrollSeconds })} />
-                <Field label="提示弹窗显示时间（秒）" type="number" value={form.toastDurationSeconds || defaultSettings.toastDurationSeconds || '1'} onChange={(toastDurationSeconds) => setForm({ ...form, toastDurationSeconds })} />
-                <Field label="邮件匹配时间窗口（分钟）" type="number" value={form.mailLookupWindowMinutes || defaultSettings.mailLookupWindowMinutes || '10'} onChange={(mailLookupWindowMinutes) => setForm({ ...form, mailLookupWindowMinutes })} />
-                {form.auditRetentionDays === 'custom' && (
-                  <Field label="自定义保留天数" value={form.auditRetentionCustomDays || ''} onChange={(auditRetentionCustomDays) => setForm({ ...form, auditRetentionCustomDays })} />
-                )}
-              </div>
-              <div className="copy-fields">
-                <span>{'\u8d26\u53f7\u8be6\u60c5\u590d\u5236\u5185\u5bb9'}</span>
-                <div>
-                  {accountCopyFieldOptions.map((item) => (
-                    <label className="copy-field-option" key={item.key}>
-                      <input type="checkbox" checked={selectedCopyFields.includes(item.key)} onChange={() => toggleCopyField(item.key)} />
-                      <span>{item.label}</span>
-                    </label>
-                  ))}
-                </div>
-              </div>
-              <button className="primary">保存基本信息</button>
-            </div>
-          </form>
-        )}
-
-        {user.role === 'admin' && <UpdatePanel request={api} />}
-
+    <section className="settings-workspace">
+      <nav className="settings-navigation" aria-label="设置分类">
+        <strong>工作空间设置</strong>
+        {categories.map(item => <button key={item.id} className={category === item.id ? 'active' : ''} onClick={() => setCategory(item.id)} aria-current={category === item.id ? 'page' : undefined}><item.icon size={17} /><span>{item.label}</span></button>)}
+        <div className="settings-navigation-footer">{settings.siteName || '甜排班'}<span>系统与个人偏好</span></div>
+      </nav>
+      <div className="settings-body">
+        <form onSubmit={saveSettings} hidden={category === 'update' || category === 'profile'}>
+          <section hidden={category !== 'appearance'}>
+            <div className="settings-section-heading"><h2>站点外观</h2><p>设置工作空间名称、显示时区和默认视图。</p></div>
+            <div className="settings-block"><h3>基本信息</h3><div className="settings-fields">
+              <Field label="系统名称" value={form.siteName || ''} onChange={siteName => setForm({ ...form, siteName })} />
+              <FancySelect label="显示时区" value={form.timezone || 'Asia/Shanghai'} options={[{ value: 'Asia/Shanghai', label: 'Asia/Shanghai', hint: '中国时间' }, { value: 'UTC', label: 'UTC', hint: '协调世界时' }]} onChange={timezone => setForm({ ...form, timezone })} />
+              <FancySelect label="默认视图" value={form.defaultView || 'day'} options={[{ value: 'day', label: '日视图', hint: '按天查看排班' }, { value: 'week', label: '周视图', hint: '按周查看排班' }]} onChange={defaultView => setForm({ ...form, defaultView })} />
+            </div></div>
+            <div className="settings-block"><h3>界面偏好</h3><div className="settings-fields">
+              <Field label="长名称滚动速度（秒）" type="number" value={form.nameScrollSeconds || defaultSettings.nameScrollSeconds || '8'} onChange={nameScrollSeconds => setForm({ ...form, nameScrollSeconds })} />
+              <Field label="提示弹窗显示时间（秒）" type="number" value={form.toastDurationSeconds || defaultSettings.toastDurationSeconds || '1'} onChange={toastDurationSeconds => setForm({ ...form, toastDurationSeconds })} />
+            </div></div>
+          </section>
+          <section hidden={category !== 'preferences'}>
+            <div className="settings-section-heading"><h2>运行与日志</h2><p>设置邮件查询范围和操作日志保留策略。</p></div>
+            <div className="settings-block"><h3>邮件查询</h3><div className="settings-fields"><Field label="邮件匹配时间窗口（分钟）" type="number" value={form.mailLookupWindowMinutes || defaultSettings.mailLookupWindowMinutes || '10'} onChange={mailLookupWindowMinutes => setForm({ ...form, mailLookupWindowMinutes })} /></div><p className="field-help">验证码和重置链接在这个时间范围内匹配，收件箱阅读功能不受限制。</p></div>
+            <div className="settings-block"><h3>操作日志</h3><div className="settings-fields">
+              <FancySelect label="日志保留时间" value={form.auditRetentionDays || '7'} options={[{ value: '3', label: '保留 3 天' }, { value: '7', label: '保留 7 天' }, { value: '30', label: '保留 30 天' }, { value: 'custom', label: '自定义天数' }]} onChange={auditRetentionDays => setForm({ ...form, auditRetentionDays })} />
+              {form.auditRetentionDays === 'custom' && <Field label="自定义保留天数" value={form.auditRetentionCustomDays || ''} onChange={auditRetentionCustomDays => setForm({ ...form, auditRetentionCustomDays })} />}
+            </div></div>
+          </section>
+          <section hidden={category !== 'copy'}>
+            <div className="settings-section-heading"><h2>账号复制</h2><p>选择复制账号时需要包含的信息。</p></div>
+            <div className="settings-block"><h3>复制字段</h3><div className="copy-fields"><div>{accountCopyFieldOptions.map(item => <label className="copy-field-option" key={item.key}><input type="checkbox" checked={selectedCopyFields.includes(item.key)} onChange={() => toggleCopyField(item.key)} /><span>{item.label}</span></label>)}</div></div><p className="field-help">复制顺序与这里的字段顺序一致。</p></div>
+          </section>
+          <div className="settings-save"><button className="primary">保存设置</button><span>修改后保存即可生效</span></div>
+        </form>
+        <div hidden={category !== 'update'}><UpdatePanel request={api} /></div>
+        <section hidden={category !== 'profile'}><div className="settings-section-heading"><h2>当前用户</h2><p>当前登录身份和操作权限。</p></div><div className="profile-summary"><span className="profile-avatar">{user.username.slice(0, 1).toUpperCase()}</span><div><h3>{user.username}</h3><span className="status-pill ok">{user.role === 'admin' ? '管理员' : '普通用户'}</span><p>{user.role === 'admin' ? '拥有账号、用户、出租、邮箱、备份和设置管理权限。' : '可查看账号与出租时间线，维护自己创建的出租记录。'}</p></div></div></section>
         <NoticeToast message={message} tone={messageTone} />
       </div>
-    </Panel>
+    </section>
   );
 }
 
@@ -4803,11 +4788,11 @@ function DeleteButton({ url, refresh, label = '删除', title = '确认删除', 
   );
 }
 
-function MobileTabs({ active, setActive, isAdmin }: { active: string; setActive: (id: string) => void; isAdmin: boolean }) {
-  const items = navItems.filter((item) => ['timeline', 'accounts', 'records'].includes(item.id) || (isAdmin && ['mailboxes', 'backup', 'settings'].includes(item.id)));
+function MobileTabs({ active, setActive, isAdmin, onMore }: { active: string; setActive: (id: string) => void; isAdmin: boolean; onMore: () => void }) {
+  const items = navItems.filter((item) => ['timeline', 'accounts', 'records'].includes(item.id) || (isAdmin && item.id === 'mailboxes'));
   return (
-    <nav className="mobile-tabs" style={{ '--mobile-tab-count': items.slice(0, 5).length } as React.CSSProperties}>
-      {items.slice(0, 5).map((item) => {
+    <nav className="mobile-tabs" aria-label="快捷导航" style={{ '--mobile-tab-count': items.length + 1 } as React.CSSProperties}>
+      {items.map((item) => {
         const Icon = item.icon;
         return (
           <button key={item.id} className={active === item.id ? 'active' : ''} onClick={() => setActive(item.id)}>
@@ -4816,6 +4801,7 @@ function MobileTabs({ active, setActive, isAdmin }: { active: string; setActive:
           </button>
         );
       })}
+      <button className={!items.some(item => item.id === active) ? 'active' : ''} onClick={onMore}><Menu size={18} /><span>更多</span></button>
     </nav>
   );
 }
