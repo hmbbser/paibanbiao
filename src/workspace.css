@@ -102,7 +102,7 @@ input[type='checkbox'] { accent-color: var(--accent); }
 .timeline-command .date-control span { background: #edeff6; border: 0; color: var(--accent); font-size: 10px; border-radius: 4px; box-shadow: none; }
 .searchbox { border-color: var(--line) !important; border-radius: 7px !important; box-shadow: none !important; background: var(--surface) !important; color: #989aa5; min-height: 36px; }
 .searchbox input { background: none; border: 0; font-weight: 400; min-height: 34px; padding: 0; box-shadow: none; font-size: 12px; }
-.status-filter { margin: 0; gap: 7px; }
+.status-filter { margin: 0; gap: 7px; position: relative; z-index: 30; }
 .status-filter > button, .game-filter-trigger { margin: 0; min-height: 32px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: #747885; box-shadow: none; font-weight: 400; font-size: 12px; padding: 0 12px; }
 .status-filter > button.active, .game-filter-trigger.active { background: var(--accent-soft); border-color: #a5aec5; color: var(--accent); box-shadow: none; }
 .game-filter-trigger { background-image: none; }
@@ -111,6 +111,8 @@ input[type='checkbox'] { accent-color: var(--accent); }
 .game-filter-option:has(input:checked) { background: var(--accent-soft); border-color: #c0c7d8; color: var(--accent); }
 .timeline-view { --timeline-left: 152px; }
 .timeline-view .scheduler {
+  position: relative; z-index: 0;
+  scroll-margin-top: 80px;
   grid-template-columns: var(--timeline-left) repeat(24, minmax(0, 1fr));
   width: 100%; min-width: 0; max-height: none; height: auto;
   overflow: clip; scrollbar-gutter: auto; touch-action: pan-y; cursor: default;
@@ -150,6 +152,15 @@ input[type='checkbox'] { accent-color: var(--accent); }
 .empty-slot { color: #babdc2; font-weight: 400; }
 .empty-slot svg { display: none; }
 .timeline-footer { margin: 0; padding: 0; background: none; border: 0; box-shadow: none; }
+.timeline-view .timeline-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; overflow: visible; position: relative; z-index: 20; }
+.timeline-pagination { min-width: 0; margin-left: auto; }
+.timeline-pagination .pagination-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 12px; padding: 0; background: transparent; border-radius: 0; }
+.timeline-pagination .pagination-size { gap: 7px; }
+.timeline-pagination .page-size-trigger { min-width: 54px; min-height: 30px; }
+.timeline-pagination .page-size-trigger strong { font-size: 12px; font-weight: 500; }
+.timeline-pagination .pagination-jump input { width: 46px; min-height: 30px; border-radius: 5px; background: var(--surface); padding-inline: 6px; text-align: center; }
+.timeline-pagination .pagination-jump .soft-btn { min-height: 30px; padding-inline: 9px; font-size: 11px; }
+.timeline-pagination .pager-btn { min-width: 30px; min-height: 30px; height: 30px; }
 .timeline-legend { color: #9699a3; font-size: 11px; gap: 20px; }
 .timeline-legend span { font-weight: 400; }
 .timeline-legend i { border-radius: 3px; box-shadow: none; width: 8px; height: 8px; }
@@ -232,7 +243,13 @@ input[type='checkbox'] { accent-color: var(--accent); }
 .filter-group { background: var(--surface); border-color: var(--line); box-shadow: none; border-radius: 8px; }
 
 /* Settings use a persistent category column and a focused form area. */
-.settings-workspace { display: grid; grid-template-columns: 188px minmax(0, 1fr); min-height: 560px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow); overflow: hidden; }
+.settings-workspace { display: grid; grid-template-columns: 188px minmax(0, 1fr); min-height: 560px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow); overflow: visible; }
+.settings-navigation { border-radius: 12px 0 0 12px; }
+.settings-backup .panel-page { background: transparent; border: 0; box-shadow: none; }
+.settings-backup .panel-title { padding: 0 0 20px; border: 0; }
+.settings-backup .panel-title h2 { font-size: 19px; }
+.settings-backup .backup-grid { padding: 0; grid-template-columns: 1fr; }
+.settings-backup .data-card p { min-height: 0; }
 .settings-navigation { display: flex; flex-direction: column; gap: 5px; padding: 24px 12px; background: #f1f0eb; border-right: 1px solid var(--line); }
 .settings-navigation > strong { font-size: 11px; font-weight: 400; color: #9c9da3; padding: 0 12px 13px; }
 .settings-navigation > button { display: flex; align-items: center; gap: 9px; text-align: left; border: 1px solid transparent; background: none; color: #8b8e99; font-size: 12px; font-weight: 400; min-height: 43px; border-radius: 7px; padding: 0 12px; }
@@ -389,6 +406,11 @@ input[type='checkbox'] { accent-color: var(--accent); }
   .auth-intro h2 { font-size: 31px; }
 }
 @media (max-width: 640px) {
+  .timeline-pagination { width: 100%; margin-left: 0; }
+  .timeline-pagination .pagination-bar { justify-content: space-between; gap: 10px; }
+  .timeline-pagination .pagination-size { flex-basis: 100%; width: 100%; justify-content: flex-start; }
+  .timeline-pagination .pagination-jump { justify-content: flex-end; width: auto; }
+  .timeline-pagination .pagination-pages { justify-content: flex-start; gap: 5px; }
   .timeline-view { --timeline-left: 92px; }
   .timeline-view .time-head strong { font-size: 8px; }
   .timeline-view .time-head:not(.account-head) strong { font-size: 0; }
@@ -504,4 +526,65 @@ input[type='checkbox'] { accent-color: var(--accent); }
 @media (prefers-reduced-motion: reduce) {
   .navigation-open > .sidebar { transition: none; }
   .startup-loading-dots span { animation: none; opacity: .65; }
+}
+
+/* Floating controls escape clipping boundaries of cards and scrollable dialogs. */
+.floating-menu { z-index: 2500; animation: none; background: var(--surface); }
+.fancy-select-menu.floating-menu { border-radius: 10px; box-shadow: 0 12px 36px #24283124; padding: 7px; gap: 4px; overscroll-behavior: contain; }
+.fancy-select-menu.floating-menu button { border-radius: 6px; min-height: 36px; color: #6b758c; }
+.fancy-select-menu.floating-menu button.active { background: var(--accent-soft); border-color: #c3ccdf; }
+.fancy-select-menu.floating-menu button.active strong { color: var(--accent); }
+.timeline-pagination .pagination-size, .timeline-pagination .pagination-jump { display: flex; border: 0; border-radius: 0; background: none; padding: 0; }
+.timeline-pagination .pagination-pages { width: auto; }
+
+/* Rental editor: rounded glass surface with a separate scrollable form. */
+.booking-glass-backdrop { inset: 0; width: 100%; min-width: 0; height: 100dvh; padding: 24px; background: rgba(35, 42, 59, .28); backdrop-filter: blur(12px) saturate(.85); -webkit-backdrop-filter: blur(12px) saturate(.85); overflow: hidden; }
+.booking-glass-backdrop .booking-modal { width: min(640px, 100%); max-width: 100%; max-height: calc(100dvh - 48px); display: flex; flex-direction: column; overflow: hidden; border: 1px solid rgba(255,255,255,.82); border-radius: 22px; background: rgba(255,254,250,.84); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); box-shadow: 0 28px 90px #20293d36, inset 0 1px 0 #fff; }
+.booking-glass-backdrop .booking-modal .modal-title { position: static; padding: 22px 24px; min-height: 84px; background: rgba(255,255,255,.2); border-bottom: 1px solid #d9dde670; flex-shrink: 0; }
+.booking-dialog-title { display: flex; align-items: center; gap: 13px; min-width: 0; }
+.booking-dialog-icon { display: grid; place-items: center; width: 43px; height: 43px; flex-shrink: 0; border: 1px solid #ffffffa6; border-radius: 13px; background: #e6ebf6b5; color: var(--accent); box-shadow: inset 0 1px 0 #fff; }
+.booking-modal .booking-dialog-heading h2 { font-size: 20px; letter-spacing: -.3px; margin: 0 0 4px; }
+.booking-dialog-title p { margin: 0; color: #9299a7; font-size: 11px; }
+.booking-glass-backdrop .booking-modal .modal-form { overflow: auto; min-height: 0; padding: 22px 24px 24px; background: transparent; gap: 16px; scrollbar-width: thin; scrollbar-color: #b6bdcc transparent; }
+.booking-contact-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 14px; }
+.booking-glass-backdrop .booking-modal input, .booking-glass-backdrop .booking-modal textarea, .booking-glass-backdrop .booking-modal .date-control, .booking-glass-backdrop .booking-modal .time-trigger, .booking-glass-backdrop .booking-modal .booking-account-trigger { min-height: 41px; border: 1px solid #d7dce6; border-radius: 11px; background: #ffffffa1; box-shadow: inset 0 1px 0 #fff; }
+.booking-glass-backdrop .booking-modal textarea { min-height: 66px; }
+.booking-glass-backdrop .booking-modal .time-pair { grid-template-columns: minmax(0,1fr) 132px; }
+.booking-status-field { min-width: 0; border: 0; margin: 0; padding: 0; }
+.booking-status-field legend { font-size: 12px; color: #8c919d; margin-bottom: 8px; padding: 0; }
+.booking-status-options { display: flex; gap: 8px; }
+.booking-status-options button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 36px; padding: 0 15px; border: 1px solid #d7dce6; border-radius: 8px; background: #ffffff90; color: #9099aa; font-size: 12px; }
+.booking-status-options button.selected { background: #e5eaf7; border-color: #909dbc; color: var(--accent); box-shadow: inset 0 1px 0 #fff; }
+.booking-status-dot { width: 6px; height: 6px; border-radius: 50%; }
+.booking-status-dot.reserved { background: #8da1c5; }
+.booking-status-dot.active { background: #79a58e; }
+.booking-status-dot.completed { background: #a3a8ac; }
+.booking-glass-backdrop .booking-modal .duration-grid { gap: 7px; }
+.booking-glass-backdrop .booking-modal .duration-grid button { min-height: 31px; border-radius: 8px; border-color: #d8dce6; background: #ffffff75; }
+.booking-glass-backdrop .booking-modal .duration-grid button.active { background: var(--accent-soft); border-color: #aebad3; }
+.booking-glass-backdrop .booking-modal .form-actions { display: flex; align-items: center; justify-content: flex-end; gap: 9px; padding-top: 4px; }
+.booking-glass-backdrop .booking-modal .form-actions button { width: auto; min-height: 39px; border-radius: 10px !important; padding-inline: 22px; }
+.booking-glass-backdrop .booking-modal .form-actions .primary { min-width: 132px; }
+.booking-glass-backdrop .booking-modal .booking-fixed-actions { flex-shrink: 0; padding: 15px 24px; margin: 0; border-top: 1px solid #d9dde670; background: #ffffff35; }
+.booking-account-menu.floating-menu { background: var(--surface); border-radius: 12px; padding: 8px; }
+.booking-account-menu.floating-menu .booking-account-filter { grid-template-columns: 54px minmax(0,1fr); padding: 10px; }
+.booking-account-menu.floating-menu .booking-account-filter .fancy-select-field > span { display: none; }
+.booking-account-menu.floating-menu .booking-account-option { color: #6c768c; background-image: none; border-radius: 7px; }
+.booking-account-menu.floating-menu .booking-account-option.active { background: var(--accent-soft); border-color: #aab6d1; }
+.booking-glass-backdrop .booking-modal .icon-btn { background: #ffffff75 !important; border: 1px solid #e2e5ed !important; border-radius: 10px !important; }
+@media (max-width: 640px) {
+  .settings-navigation { border-radius: 12px 12px 0 0; }
+  .booking-glass-backdrop { padding: 14px; }
+  .booking-glass-backdrop .booking-modal { max-height: calc(100dvh - 28px); border-radius: 18px; }
+  .booking-glass-backdrop .booking-modal .modal-title { padding: 17px 18px; min-height: 76px; }
+  .booking-modal .booking-dialog-heading h2 { font-size: 18px; }
+  .booking-dialog-title { gap: 9px; }
+  .booking-dialog-icon { width: 35px; height: 35px; border-radius: 10px; }
+  .booking-dialog-title p { font-size: 10px; }
+  .booking-glass-backdrop .booking-modal .modal-form { padding: 18px; gap: 14px; }
+  .booking-glass-backdrop .booking-modal .booking-fixed-actions { padding: 13px 18px; }
+  .booking-contact-grid { grid-template-columns: 1fr; gap: 14px; }
+  .booking-glass-backdrop .booking-modal .time-pair { grid-template-columns: minmax(0,1fr) 100px; }
+  .booking-status-options { gap: 6px; }
+  .booking-status-options button { flex: 1; padding-inline: 8px; font-size: 11px; }
 }

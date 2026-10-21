@@ -1,5 +1,6 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { createPortal } from 'react-dom';
 import {
   Archive,
   CalendarDays,
@@ -85,8 +86,7 @@ const navItems: NavItem[] = [
   { id: 'accounts', label: '账号', icon: KeyRound },
   { id: 'mailboxes', label: '邮箱', icon: Mail, admin: true },
   { id: 'users', label: '用户', icon: Users, admin: true },
-  { id: 'records', label: '记录', icon: FileClock },
-  { id: 'backup', label: '备份', icon: DatabaseBackup, admin: true },
+  { id: 'records', label: '日志', icon: FileClock },
   { id: 'settings', label: '设置', icon: Settings }
 ];
 
@@ -1090,8 +1090,7 @@ function Dashboard({
     accounts: { title: '账号管理', description: '管理可出租账号、关联邮箱与账号状态。' },
     mailboxes: { title: '邮箱管理', description: '管理收件邮箱，读取验证码、重置链接与邮件。' },
     users: { title: '用户管理', description: '管理登录用户、角色与操作权限。' },
-    records: { title: '出租与操作记录', description: '查询出租明细，追踪账号和用户的操作。' },
-    backup: { title: '备份与恢复', description: '导出完整数据，或从备份恢复工作空间。' },
+    records: { title: '日志', description: '查询出租明细，追踪账号和用户的操作日志。' },
     settings: { title: '系统设置', description: '管理站点外观、运行偏好与版本更新。' }
   };
   function navigate(id: string) { setActive(id); setNavigationOpen(false); }
@@ -1174,7 +1173,6 @@ function Dashboard({
               onEdit={(booking) => { setEditing(booking); setDrawerOpen(true); }}
             />
           )}
-          {active === 'backup' && user.role === 'admin' && <BackupPanel settings={settings} />}
           {active === 'settings' && <SettingsPanel user={user} settings={settings} onSettings={onSettings} />}
         </section>
       </main>
@@ -1270,6 +1268,9 @@ function Timeline({
   const [selectedDate, setSelectedDate] = useState(() => getLocalDateValue(new Date()));
   const [recordMode, setRecordMode] = useState<'today' | 'recent'>('today');
   const [nameFilter, setNameFilter] = useState<string[]>([]);
+  const [gamePage, setGamePage] = useState(1);
+  const [gamesPerPage, setGamesPerPage] = useState(10);
+  const timelineRef = useRef<HTMLDivElement>(null);
   const [accountRailOpen, setAccountRailOpen] = useState(true);
   const [accountRailEnabled, setAccountRailEnabled] = useState(false);
   const autoBookings = useMemo(() => bookings.map(withAutoBookingStatus), [bookings]);
@@ -1297,6 +1298,7 @@ function Timeline({
   });
   const visibleBookingAccountIds = new Set(visibleBookings.map((booking) => booking.account_id));
   const visibleAccounts = accounts.filter((account) => matchAccountName(account.name) && (account.status === 'active' || visibleBookingAccountIds.has(account.id)));
+  const pagedGames = paginateItems(visibleAccounts, gamePage, gamesPerPage);
   const activeAccountCount = accounts.filter((account) => matchAccountName(account.name) && account.status === 'active').length;
   const miniBookings = recordMode === 'today'
     ? visibleBookings
@@ -1312,6 +1314,9 @@ function Timeline({
   };
   const accountRailActive = accountRailEnabled && !accountRailOpen;
   const nowLineEdgeClass = currentLeft > 88 ? 'near-right' : currentLeft < 12 ? 'near-left' : '';
+
+  useEffect(() => { setGamePage(1); }, [nameFilter, statusFilter, query, selectedDate, gamesPerPage]);
+  useEffect(() => { setGamePage(page => clampPage(page, pagedGames.pageCount)); }, [pagedGames.pageCount]);
 
   useEffect(() => {
     const media = window.matchMedia('(max-width: 640px) and (pointer: coarse)');
@@ -1332,6 +1337,11 @@ function Timeline({
     const date = new Date(`${selectedDate}T00:00:00`);
     date.setDate(date.getDate() + days);
     setSelectedDate(getLocalDateValue(date));
+  }
+
+  function changeGamePage(page: number) {
+    setGamePage(page);
+    window.requestAnimationFrame(() => timelineRef.current?.scrollIntoView({ block: 'start' }));
   }
 
   return (
@@ -1380,6 +1390,7 @@ function Timeline({
 
       <div
         className={`scheduler ${accountRailEnabled ? (accountRailOpen ? 'account-rail-open' : 'account-rail-collapsed') : ''}`}
+        ref={timelineRef}
       >
         <button
           type="button"
@@ -1398,7 +1409,7 @@ function Timeline({
             <small>30</small>
           </div>
         ))}
-        {visibleAccounts.map((account, accountIndex) => {
+        {pagedGames.items.map((account, accountIndex) => {
           const accountActive = account.status === 'active';
           const accountStatusText = accountActive ? '可用' : '停用';
           const rowBookings = visibleBookings.filter((booking) => booking.account_id === account.id);
@@ -1488,6 +1499,9 @@ function Timeline({
           <span><i className="completed" />已结束</span>
           <span><i className="cancelled" />冲突</span>
         </div>
+        <nav className="timeline-pagination" aria-label="游戏时间线分页">
+          <PaginationControls total={visibleAccounts.length} page={pagedGames.safePage} pageSize={gamesPerPage} onPage={changeGamePage} onPageSize={setGamesPerPage} sizeOptions={[5, 8, 10, 20, 50]} itemLabel="个游戏" />
+        </nav>
       </div>
 
       <div className="mini-records">
@@ -1519,7 +1533,7 @@ function Timeline({
       </div>
 
       <div className="mobile-schedule">
-        {visibleAccounts.map((account) => (
+        {pagedGames.items.map((account) => (
           <article className="account-card" key={account.id}>
             <div>
               <h3>{account.name}</h3>
@@ -1652,8 +1666,8 @@ function DatePickerButton({ value, onChange, todayLabel = '', align = 'start' }:
         {todayLabel && <span>{todayLabel}</span>}
         <ChevronDown size={15} />
       </button>
-      {open && (
-        <div className="cute-calendar" ref={calendarRef} style={calendarStyle}>
+      {open && createPortal(
+        <div className="cute-calendar floating-menu" ref={calendarRef} style={calendarStyle} onClick={event => event.stopPropagation()}>
           <div className="calendar-head">
             <button type="button" onClick={() => shiftMonth(-1)}><ChevronLeft size={16} /></button>
             <strong>{month.getFullYear()}年 {month.getMonth() + 1}月</strong>
@@ -1682,7 +1696,7 @@ function DatePickerButton({ value, onChange, todayLabel = '', align = 'start' }:
             <button type="button" onClick={() => choose(today)}>今天</button>
             <button type="button" onClick={() => setOpen(false)}>关闭</button>
           </div>
-        </div>
+        </div>, document.body
       )}
     </div>
   );
@@ -1780,6 +1794,7 @@ function BookingDrawer({
   onError: (msg: string) => void;
 }) {
   const firstActiveAccount = accounts.find((account) => account.status === 'active')?.id || '';
+  const bookingFormId = React.useId();
   const initialStart = booking ? new Date(booking.starts_at) : new Date();
   const initialEnd = booking ? new Date(booking.ends_at) : addHours(initialStart, 1);
   const initialStatus = booking
@@ -1799,10 +1814,12 @@ function BookingDrawer({
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [accountPickerOpen, setAccountPickerOpen] = useState(false);
-  const [accountCategoryOpen, setAccountCategoryOpen] = useState(false);
   const [accountCategory, setAccountCategory] = useState('all');
   const [accountNameLibrary, setAccountNameLibrary] = useState<string[]>([]);
   const accountPickerRef = useRef<HTMLDivElement>(null);
+  const accountPickerTriggerRef = useRef<HTMLButtonElement>(null);
+  const accountPickerMenuRef = useRef<HTMLDivElement>(null);
+  const accountPickerStyle = useFloatingMenu(accountPickerOpen, accountPickerTriggerRef, accountPickerMenuRef);
   const selectedAccount = accounts.find((account) => account.id === form.account_id);
   const activeAccounts = accounts.filter((account) => account.status === 'active');
   const selectableAccounts = booking && selectedAccount && selectedAccount.status !== 'active'
@@ -1815,16 +1832,12 @@ function BookingDrawer({
   const filteredSelectableAccounts = accountCategory === 'all'
     ? selectableAccounts
     : selectableAccounts.filter((account) => normalizeNameKey(account.name) === accountCategory);
-  const selectedAccountCategoryLabel = accountCategory === 'all'
-    ? '全部分类'
-    : accountCategoryOptions.find((name) => normalizeNameKey(name) === accountCategory) || '全部分类';
-
   useEffect(() => {
     if (!accountPickerOpen) return undefined;
     const closePicker = (event: PointerEvent) => {
-      if (!accountPickerRef.current?.contains(event.target as Node)) {
+      if ((event.target as Element).closest('.fancy-select-menu.floating-menu')) return;
+      if (!accountPickerRef.current?.contains(event.target as Node) && !accountPickerMenuRef.current?.contains(event.target as Node)) {
         setAccountPickerOpen(false);
-        setAccountCategoryOpen(false);
       }
     };
     window.addEventListener('pointerdown', closePicker);
@@ -1850,6 +1863,17 @@ function BookingDrawer({
     const available = new Set(accountCategoryOptions.map(normalizeNameKey));
     if (!available.has(accountCategory)) setAccountCategory('all');
   }, [accountCategory, accountCategoryOptions]);
+
+  useEffect(() => {
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    function closeOnEscape(event: KeyboardEvent) {
+      if (document.querySelector('.fancy-select-menu, .cute-calendar, .time-menu')) return;
+      if (event.key === 'Escape') { if (accountPickerOpen) setAccountPickerOpen(false); else onClose(); }
+    }
+    window.addEventListener('keydown', closeOnEscape);
+    return () => { document.body.style.overflow = previous; window.removeEventListener('keydown', closeOnEscape); };
+  }, [accountPickerOpen, onClose]);
 
   function setDuration(hours: number) {
     const start = booking ? (parseLocalDate(form.starts_at) || new Date()) : new Date();
@@ -1939,25 +1963,22 @@ function BookingDrawer({
   }
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <section className="admin-modal booking-modal" onClick={(event) => event.stopPropagation()}>
-        <div className="modal-title">
-          <div>
-            <span>出租信息</span>
-            <h2>{booking ? '编辑出租' : '新建出租'}</h2>
-          </div>
-          <button className="icon-btn" onClick={onClose}><X size={18} /></button>
+    <div className="modal-backdrop booking-glass-backdrop" onClick={onClose}>
+      <section className="admin-modal booking-modal" role="dialog" aria-modal="true" aria-labelledby="booking-dialog-title" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-title booking-dialog-heading">
+          <div className="booking-dialog-title"><span className="booking-dialog-icon"><CalendarDays size={22} /></span><div><h2 id="booking-dialog-title">{booking ? '编辑出租' : '新建出租'}</h2><p>选择账号，安排租客与出租时间。</p></div></div>
+          <button type="button" className="icon-btn" onClick={onClose} aria-label="关闭出租窗口"><X size={18} /></button>
         </div>
-        <form className="modal-form" onSubmit={save}>
+        <form className="modal-form" id={bookingFormId} onSubmit={save}>
         <div className="form-field booking-account-field">
           <span>账号</span>
           <div ref={accountPickerRef} className={`booking-account-picker ${accountPickerOpen ? 'is-open' : ''}`}>
             <button
               type="button"
               className="booking-account-trigger"
+              ref={accountPickerTriggerRef}
               onClick={() => {
                 setAccountPickerOpen((open) => {
-                  if (open) setAccountCategoryOpen(false);
                   return !open;
                 });
               }}
@@ -1970,52 +1991,11 @@ function BookingDrawer({
               {selectedAccount && <small>{selectedAccount.login}</small>}
               <ChevronDown size={16} />
             </button>
-            {accountPickerOpen && (
-              <div className="booking-account-menu">
+            {accountPickerOpen && createPortal(
+              <div className="booking-account-menu floating-menu" ref={accountPickerMenuRef} style={accountPickerStyle} onClick={event => event.stopPropagation()}>
                 <div className="booking-account-filter">
                   <span>分类筛选</span>
-                  <div className={`booking-account-category ${accountCategoryOpen ? 'is-open' : ''}`}>
-                    <button
-                      type="button"
-                      className="booking-account-category-trigger"
-                      onClick={() => setAccountCategoryOpen((open) => !open)}
-                      title={selectedAccountCategoryLabel}
-                    >
-                      <strong>{selectedAccountCategoryLabel}</strong>
-                      <ChevronDown size={14} />
-                    </button>
-                    {accountCategoryOpen && (
-                      <div className="booking-account-category-menu">
-                        <button
-                          type="button"
-                          className={accountCategory === 'all' ? 'active' : ''}
-                          onClick={() => {
-                            setAccountCategory('all');
-                            setAccountCategoryOpen(false);
-                          }}
-                        >
-                          全部分类
-                        </button>
-                        {accountCategoryOptions.map((name) => {
-                          const key = normalizeNameKey(name);
-                          return (
-                            <button
-                              type="button"
-                              key={key}
-                              className={accountCategory === key ? 'active' : ''}
-                              onClick={() => {
-                                setAccountCategory(key);
-                                setAccountCategoryOpen(false);
-                              }}
-                              title={name}
-                            >
-                              {name}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
+                  <FancySelect label="游戏分类" value={accountCategory} options={[{value:'all',label:'全部分类'},...accountCategoryOptions.map(name=>({value:normalizeNameKey(name),label:name}))]} onChange={setAccountCategory} />
                 </div>
                 {selectableAccounts.length === 0 ? (
                   <div className="booking-account-empty">暂无可用账号</div>
@@ -2029,7 +2009,6 @@ function BookingDrawer({
                     onClick={() => {
                       setForm({ ...form, account_id: account.id });
                       setAccountPickerOpen(false);
-                      setAccountCategoryOpen(false);
                     }}
                   >
                     <span>
@@ -2039,12 +2018,12 @@ function BookingDrawer({
                     <em>{account.status === 'active' ? '可用' : '停用'}</em>
                   </button>
                 ))}
-              </div>
+              </div>, document.body
             )}
           </div>
         </div>
-        <Field label="租客姓名" value={form.renter_name} onChange={(renter_name) => setForm({ ...form, renter_name })} required />
-        <Field label="联系方式" value={form.renter_contact} onChange={(renter_contact) => setForm({ ...form, renter_contact })} />
+        <div className="booking-contact-grid"><Field label="租客姓名" value={form.renter_name} onChange={(renter_name) => setForm({ ...form, renter_name })} required />
+        <Field label="联系方式" value={form.renter_contact} onChange={(renter_contact) => setForm({ ...form, renter_contact })} /></div>
         <div className="form-field">
           <span>开始时间</span>
           <div className="time-pair">
@@ -2064,21 +2043,15 @@ function BookingDrawer({
             <button type="button" className={durationHours(form.starts_at, form.ends_at) === hour ? 'active' : ''} key={hour} onClick={() => setDuration(hour)}>{hour}h</button>
           ))}
         </div>
-        <FancySelect
-          label="状态"
-          value={form.status}
-          options={editableBookingStatuses.map((key) => ({ value: key, label: statusText[key] }))}
-          onChange={(status) => setForm({ ...form, status: status as BookingStatus })}
-        />
+        <fieldset className="booking-status-field"><legend>状态</legend><div className="booking-status-options" role="group" aria-label="出租状态">
+          {editableBookingStatuses.map(status => <button key={status} type="button" className={form.status === status ? 'selected' : ''} aria-pressed={form.status === status} onClick={() => setForm({ ...form, status })}><span className={`booking-status-dot ${status}`} />{statusText[status]}</button>)}
+        </div></fieldset>
         <label>
           <span>备注</span>
           <textarea value={form.remark} onChange={(event) => setForm({ ...form, remark: event.target.value })} />
         </label>
         {conflict && <div className="conflict">{conflict}</div>}
         {formError && !conflict && <div className="form-error">{formError}</div>}
-        <div className="form-actions">
-          <button className="primary large">保存</button>
-        </div>
         {booking && (
           <div className="drawer-actions">
             <button type="button" className="soft-btn" onClick={() => action('renew')}>续租</button>
@@ -2087,6 +2060,9 @@ function BookingDrawer({
           </div>
         )}
         </form>
+        <div className="form-actions booking-fixed-actions">
+          <button type="button" className="soft-btn" onClick={onClose}>取消</button><button type="submit" form={bookingFormId} className="primary large">{booking ? '保存修改' : '创建出租'}</button>
+        </div>
       </section>
       {deleteConfirmOpen && (
         <ConfirmModal
@@ -2667,50 +2643,33 @@ function pageNumbers(current: number, pageCount: number) {
     .sort((a, b) => a - b);
 }
 
-function PageSizeDropdown({ value, onChange }: { value: number; onChange: (value: number) => void }) {
+function PageSizeDropdown({ value, onChange, options = pageSizeOptions, label = '每页条数' }: { value: number; onChange: (value: number) => void; options?: number[]; label?: string }) {
   const [open, setOpen] = useState(false);
-  const [menuStyle, setMenuStyle] = useState<React.CSSProperties>({});
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const menuStyle = useFloatingMenu(open, triggerRef, menuRef);
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) return;
     function close(event: PointerEvent) {
-      if (!ref.current?.contains(event.target as Node)) setOpen(false);
+      if (!ref.current?.contains(event.target as Node) && !menuRef.current?.contains(event.target as Node)) setOpen(false);
     }
     document.addEventListener('pointerdown', close);
     return () => document.removeEventListener('pointerdown', close);
   }, [open]);
 
-  function toggleOpen() {
-    setOpen((next) => {
-      const willOpen = !next;
-      if (willOpen && ref.current) {
-        const rect = ref.current.getBoundingClientRect();
-        const bottomSpace = window.innerHeight - rect.bottom;
-        const topSpace = rect.top;
-        const openUp = bottomSpace < 180 && topSpace > bottomSpace;
-        setMenuStyle({
-          position: 'fixed',
-          left: `${rect.left}px`,
-          top: openUp ? 'auto' : `${rect.bottom + 8}px`,
-          bottom: openUp ? `${window.innerHeight - rect.top + 8}px` : 'auto',
-          width: `${rect.width}px`,
-          minWidth: `${Math.max(rect.width, 82)}px`
-        });
-      }
-      return willOpen;
-    });
-  }
+  function toggleOpen() { setOpen(value => !value); }
 
   return (
     <div className="page-size-menu" ref={ref}>
-      <button type="button" className="page-size-trigger" onClick={toggleOpen} aria-expanded={open}>
+      <button type="button" className="page-size-trigger" ref={triggerRef} onClick={toggleOpen} aria-expanded={open} aria-label={`${label}：${value}`}>
         <strong>{value}</strong>
         <ChevronDown size={15} />
       </button>
-      {open && (
-        <div className="page-size-options" style={menuStyle}>
-          {pageSizeOptions.map((size) => (
+      {open && createPortal(
+        <div className="page-size-options floating-menu" ref={menuRef} style={menuStyle} onClick={event => event.stopPropagation()}>
+          {options.map((size) => (
             <button
               type="button"
               className={size === value ? 'active' : ''}
@@ -2723,7 +2682,7 @@ function PageSizeDropdown({ value, onChange }: { value: number; onChange: (value
               {size}
             </button>
           ))}
-        </div>
+        </div>, document.body
       )}
     </div>
   );
@@ -2734,13 +2693,17 @@ function PaginationControls({
   page,
   pageSize,
   onPage,
-  onPageSize
+  onPageSize,
+  sizeOptions = pageSizeOptions,
+  itemLabel = '条'
 }: {
   total: number;
   page: number;
   pageSize: number;
   onPage: (page: number) => void;
   onPageSize: (pageSize: number) => void;
+  sizeOptions?: number[];
+  itemLabel?: string;
 }) {
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
   const safePage = clampPage(page, pageCount);
@@ -2760,22 +2723,22 @@ function PaginationControls({
     <div className="pagination-bar">
       <div className="pagination-size">
         <span>{'\u6bcf\u9875'}</span>
-        <PageSizeDropdown value={pageSize} onChange={(next) => { onPageSize(next); onPage(1); }} />
-        <span className="pagination-total">{`\u5171 ${total} \u6761 / ${pageCount} \u9875`}</span>
+        <PageSizeDropdown value={pageSize} options={sizeOptions} label={itemLabel === '个游戏' ? '每页显示游戏数' : '每页条数'} onChange={(next) => { onPageSize(next); onPage(1); }} />
+        <span className="pagination-total">{`共 ${total} ${itemLabel} / ${pageCount} 页`}</span>
       </div>
       <div className="pagination-pages">
-        <button type="button" className="pager-btn" disabled={safePage <= 1} onClick={() => onPage(safePage - 1)}><ChevronLeft size={15} /></button>
+        <button type="button" className="pager-btn" aria-label="上一页" disabled={safePage <= 1} onClick={() => onPage(safePage - 1)}><ChevronLeft size={15} /></button>
         {pageNumbers(safePage, pageCount).map((item, index, list) => (
           <React.Fragment key={item}>
             {index > 0 && item - list[index - 1] > 1 && <span className="pager-gap">...</span>}
             <button type="button" className={`pager-btn ${item === safePage ? 'active' : ''}`} onClick={() => onPage(item)}>{item}</button>
           </React.Fragment>
         ))}
-        <button type="button" className="pager-btn" disabled={safePage >= pageCount} onClick={() => onPage(safePage + 1)}><ChevronRight size={15} /></button>
+        <button type="button" className="pager-btn" aria-label="下一页" disabled={safePage >= pageCount} onClick={() => onPage(safePage + 1)}><ChevronRight size={15} /></button>
       </div>
       <form className="pagination-jump" onSubmit={jumpToPage}>
         <span>{'\u8df3\u5230'}</span>
-        <input value={jump} onChange={(event) => setJump(event.target.value.replace(/[^\d]/g, ''))} inputMode="numeric" />
+        <input aria-label="跳转页码" value={jump} onChange={(event) => setJump(event.target.value.replace(/[^\d]/g, ''))} inputMode="numeric" />
         <button type="submit" className="soft-btn">{'\u786e\u5b9a'}</button>
       </form>
     </div>
@@ -3816,12 +3779,14 @@ function NamePicker({
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const menuStyle = useFloatingMenu(open, ref, menuRef);
   const filtered = options.filter((name) => !value.trim() || name.toLowerCase().includes(value.trim().toLowerCase()));
 
   useEffect(() => {
     if (!open) return;
     function close(event: PointerEvent) {
-      if (!ref.current?.contains(event.target as Node)) setOpen(false);
+      if (!ref.current?.contains(event.target as Node) && !menuRef.current?.contains(event.target as Node)) setOpen(false);
     }
     document.addEventListener('pointerdown', close);
     return () => document.removeEventListener('pointerdown', close);
@@ -3844,8 +3809,8 @@ function NamePicker({
           />
           {onManage && <button type="button" className="name-picker-manage" onClick={onManage}>管理</button>}
         </div>
-        {open && (
-          <div className="name-picker-menu">
+        {open && createPortal(
+          <div className="name-picker-menu floating-menu" ref={menuRef} style={menuStyle} onClick={event => event.stopPropagation()}>
             <div className="name-picker-menu-head">
               <strong>快捷选择名称</strong>
               {onManage && <button type="button" onClick={onManage}>管理名称</button>}
@@ -3866,7 +3831,7 @@ function NamePicker({
               ))}
               {filtered.length === 0 && <p>没有匹配名称，可以直接输入后保存账号。</p>}
             </div>
-          </div>
+          </div>, document.body
         )}
       </div>
     </label>
@@ -3984,6 +3949,34 @@ type FancySelectOption = {
   hint?: string;
 };
 
+function useFloatingMenu(open: boolean, anchor: React.RefObject<HTMLElement | null>, menu: React.RefObject<HTMLDivElement | null>) {
+  const [style, setStyle] = useState<React.CSSProperties>({ visibility: 'hidden' });
+  useLayoutEffect(() => {
+    if (!open) return;
+    function position() {
+      const trigger = anchor.current;
+      const panel = menu.current;
+      if (!trigger || !panel) return;
+      const rect = trigger.getBoundingClientRect();
+      const padding = 12;
+      const below = Math.max(0, window.innerHeight - rect.bottom - padding - 8);
+      const above = Math.max(0, rect.top - padding - 8);
+      const naturalHeight = Math.min(panel.scrollHeight + 2, 300);
+      const up = below < naturalHeight && above > below;
+      const maxHeight = Math.min(300, up ? above : below);
+      const height = Math.min(naturalHeight, maxHeight);
+      const width = Math.min(Math.max(rect.width, 100), window.innerWidth - padding * 2);
+      const left = Math.max(padding, Math.min(rect.left, window.innerWidth - width - padding));
+      setStyle({ position: 'fixed', top: up ? Math.max(padding, rect.top - height - 8) : rect.bottom + 8, left, right: 'auto', width, minWidth: 0, maxHeight, visibility: 'visible' });
+    }
+    position();
+    window.addEventListener('resize', position);
+    window.addEventListener('scroll', position, true);
+    return () => { window.removeEventListener('resize', position); window.removeEventListener('scroll', position, true); };
+  }, [open, anchor, menu]);
+  return style;
+}
+
 function FancySelect({
   label,
   value,
@@ -3999,32 +3992,38 @@ function FancySelect({
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const menuStyle = useFloatingMenu(open, triggerRef, menuRef);
   const selected = options.find((item) => item.value === value);
 
   useEffect(() => {
     if (!open) return undefined;
 
     function handlePointerDown(event: PointerEvent) {
-      if (rootRef.current && !rootRef.current.contains(event.target as Node)) setOpen(false);
+      const target = event.target as Node;
+      if (!rootRef.current?.contains(target) && !menuRef.current?.contains(target)) setOpen(false);
     }
 
+    function closeOnEscape(event: KeyboardEvent) { if (event.key === 'Escape') setOpen(false); }
     window.addEventListener('pointerdown', handlePointerDown);
-    return () => window.removeEventListener('pointerdown', handlePointerDown);
+    window.addEventListener('keydown', closeOnEscape);
+    return () => { window.removeEventListener('pointerdown', handlePointerDown); window.removeEventListener('keydown', closeOnEscape); };
   }, [open]);
 
   return (
     <label className="fancy-select-field">
       <span>{label}</span>
       <div className={`fancy-select ${open ? 'is-open' : ''}`} ref={rootRef}>
-        <button type="button" className="fancy-select-trigger" onClick={() => setOpen((next) => !next)} aria-expanded={open}>
+        <button type="button" className="fancy-select-trigger" ref={triggerRef} onClick={() => setOpen((next) => !next)} aria-expanded={open} aria-label={label}>
           <div>
             <strong>{selected?.label || placeholder || '请选择'}</strong>
             {selected?.hint && <small>{selected.hint}</small>}
           </div>
           <ChevronDown size={17} />
         </button>
-        {open && (
-          <div className="fancy-select-menu">
+        {open && createPortal(
+          <div className="fancy-select-menu floating-menu" ref={menuRef} style={menuStyle} onClick={event => event.stopPropagation()}>
             {options.map((item) => (
               <button
                 key={item.value || '__empty__'}
@@ -4039,7 +4038,7 @@ function FancySelect({
                 {item.hint && <small>{item.hint}</small>}
               </button>
             ))}
-          </div>
+          </div>, document.body
         )}
       </div>
     </label>
@@ -4342,7 +4341,7 @@ function RecordsPanel({
 
   return (
     <div className="records-stack">
-      <Panel title="记录" subtitle="按账号和操作用户筛选记录。">
+      <Panel title="日志" subtitle="按账号和操作用户筛选出租记录与操作日志。">
         <div className="admin-toolbar">
           <div className="filter-group">
             <FancySelect
@@ -4578,6 +4577,7 @@ function SettingsPanel({ user, settings, onSettings }: { user: User; settings: A
     { id: 'appearance', label: '站点外观', icon: Settings },
     { id: 'preferences', label: '运行与日志', icon: Clock3 },
     { id: 'copy', label: '账号复制', icon: Copy },
+    { id: 'backup', label: '备份与恢复', icon: DatabaseBackup },
     { id: 'update', label: '版本更新', icon: RefreshCw },
     { id: 'profile', label: '当前用户', icon: Users }
   ];
@@ -4589,7 +4589,7 @@ function SettingsPanel({ user, settings, onSettings }: { user: User; settings: A
         <div className="settings-navigation-footer">{settings.siteName || '甜排班'}<span>系统与个人偏好</span></div>
       </nav>
       <div className="settings-body">
-        <form onSubmit={saveSettings} hidden={category === 'update' || category === 'profile'}>
+        <form onSubmit={saveSettings} hidden={['update', 'profile', 'backup'].includes(category)}>
           <section hidden={category !== 'appearance'}>
             <div className="settings-section-heading"><h2>站点外观</h2><p>设置工作空间名称、显示时区和默认视图。</p></div>
             <div className="settings-block"><h3>基本信息</h3><div className="settings-fields">
@@ -4616,6 +4616,7 @@ function SettingsPanel({ user, settings, onSettings }: { user: User; settings: A
           </section>
           <div className="settings-save"><button className="primary">保存设置</button><span>修改后保存即可生效</span></div>
         </form>
+        <div hidden={category !== 'backup'} className="settings-backup"><BackupPanel settings={settings} /></div>
         <div hidden={category !== 'update'}><UpdatePanel request={api} /></div>
         <section hidden={category !== 'profile'}><div className="settings-section-heading"><h2>当前用户</h2><p>当前登录身份和操作权限。</p></div><div className="profile-summary"><span className="profile-avatar">{user.username.slice(0, 1).toUpperCase()}</span><div><h3>{user.username}</h3><span className="status-pill ok">{user.role === 'admin' ? '管理员' : '普通用户'}</span><p>{user.role === 'admin' ? '拥有账号、用户、出租、邮箱、备份和设置管理权限。' : '可查看账号与出租时间线，维护自己创建的出租记录。'}</p></div></div></section>
         <NoticeToast message={message} tone={messageTone} />
@@ -4840,8 +4841,8 @@ function TimeSelect({ value, onChange }: { value: string; onChange: (value: stri
         <strong>{selected}</strong>
         <ChevronDown size={15} />
       </button>
-      {open && (
-        <div className="time-menu" ref={menuRef} style={menuStyle}>
+      {open && createPortal(
+        <div className="time-menu floating-menu" ref={menuRef} style={menuStyle} onClick={event => event.stopPropagation()}>
           <div className="time-menu-head">
             <span>时间</span>
             <strong>{selected}</strong>
@@ -4884,7 +4885,7 @@ function TimeSelect({ value, onChange }: { value: string; onChange: (value: stri
             <button type="button" onClick={chooseNow}>现在</button>
             <button type="button" className="primary-time-action" onClick={() => setOpen(false)}>完成</button>
           </div>
-        </div>
+        </div>, document.body
       )}
     </div>
   );
