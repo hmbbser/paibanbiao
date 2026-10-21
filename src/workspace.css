@@ -109,7 +109,20 @@ input[type='checkbox'] { accent-color: var(--accent); }
 .game-filter-menu { background: var(--surface); border-color: var(--line); box-shadow: 0 8px 30px #24283118; border-radius: 9px; }
 .game-filter-option, .game-filter-head button { border-color: var(--line); border-radius: 6px; background: #f7f6f2; color: #727786; font-weight: 400; }
 .game-filter-option:has(input:checked) { background: var(--accent-soft); border-color: #c0c7d8; color: var(--accent); }
-.scheduler { border-color: var(--line); border-radius: 10px; background: var(--surface); box-shadow: var(--shadow); }
+.timeline-view { --timeline-left: 152px; }
+.timeline-view .scheduler {
+  grid-template-columns: var(--timeline-left) repeat(24, minmax(0, 1fr));
+  width: 100%; min-width: 0; max-height: none; height: auto;
+  overflow: clip; scrollbar-gutter: auto; touch-action: pan-y; cursor: default;
+  border-color: var(--line); border-radius: 10px; background: var(--surface); box-shadow: var(--shadow);
+}
+.timeline-view .scheduler.account-rail-collapsed { grid-template-columns: 24px repeat(24, minmax(0, 1fr)); }
+.timeline-view .timeline-row { grid-template-columns: repeat(24, minmax(0, 1fr)); min-width: 0; }
+.timeline-view .time-head { min-width: 0; padding-inline: 0; position: relative; }
+.timeline-view .time-head strong { font-size: clamp(8px, .65vw, 11px); }
+.timeline-view .time-head small { font-size: 8px; }
+.timeline-view .hour-cell { min-width: 0; }
+.timeline-view .account-cell { min-width: 0; }
 .time-head { background: #f1f0eb; border-color: var(--line); color: #9597a0; font-size: 11px; }
 .time-head strong { font-weight: 500; }
 .time-head.account-head { background: #efeee9; color: #6d7280; font-weight: 500; }
@@ -160,22 +173,18 @@ input[type='checkbox'] { accent-color: var(--accent); }
 .admin-table-head { background: #f2f1ec; font-size: 12px; min-height: 42px; color: #8d919b; font-weight: 400; border-color: var(--line); }
 .admin-table-row { min-height: 76px; background: var(--surface); border-color: #eae9e3; font-size: 12px; color: #737987; }
 .admin-table-row:hover { background: #f8f7f3; }
-.admin-table-head.account-table.manage, .admin-table-row.account-table.manage { min-width: 880px; grid-template-columns: 20px 28px minmax(138px, 1.15fr) minmax(130px, 1fr) 80px minmax(94px, .8fr) 240px; gap: 10px; padding-inline: 18px; }
-.admin-table-head.account-table.readonly, .admin-table-row.account-table.readonly { min-width: 730px; grid-template-columns: minmax(138px, 1.15fr) minmax(130px, 1fr) 76px minmax(94px, .8fr) 225px; gap: 10px; }
-.account-identity, .account-credentials { display: grid; gap: 4px; min-width: 0; padding-block: 14px; }
-.account-identity .copy-value-name { font-size: 13px; font-weight: 550; }
-.account-identity small { display: none; }
-.account-identity .copy-value:not(.copy-value-name) { color: #9299a7; font-size: 11px; }
-.account-credentials small { color: #a1a5af; font-size: 10px; line-height: 1.6; }
-.admin-account-table .account-row-actions { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; padding-block: 12px; }
-.user-account-table .account-row-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; padding-block: 12px; }
-.admin-account-table .account-row-actions .icon-btn { width: 100%; }
+.admin-table-head.account-table.manage, .admin-table-row.account-table.manage { min-width: 1060px; grid-template-columns: 20px 26px minmax(132px, 1.2fr) minmax(112px, 1fr) minmax(130px, 1fr) 86px minmax(138px, 1.2fr) 306px; gap: 10px; padding-inline: 18px; }
+.admin-table-head.account-table.readonly, .admin-table-row.account-table.readonly { min-width: 920px; grid-template-columns: minmax(132px, 1.2fr) minmax(112px, 1fr) minmax(130px, 1fr) 66px minmax(138px, 1.2fr) 230px; gap: 10px; }
+.admin-account-table .account-row-actions, .user-account-table .account-row-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding-block: 12px; }
+.admin-account-table .account-row-actions .ghost-action, .user-account-table .account-row-actions .ghost-action { width: auto; flex: 0 0 auto; min-width: 0; display: inline-flex; justify-content: center; align-items: center; border: 1px solid var(--line); padding: 0 9px; gap: 5px; white-space: nowrap; line-height: 1; overflow: visible; }
+.admin-account-table .account-row-actions .icon-btn { flex: 0 0 30px; width: 30px; border: 1px solid var(--line); padding: 0; }
+.account-row-actions .ghost-action svg { flex-shrink: 0; }
 .admin-table-head.user-table, .admin-table-row.user-table { min-width: 620px; }
 .admin-table-row > strong, .copy-value-name { color: #343b4b; font-weight: 550; }
 .copy-value { font-weight: 400; padding: 4px; border-radius: 4px; }
 .copy-value:hover { background: #eff0f4; border-color: #d2d7e3; color: var(--accent); }
 .copy-value-code, .mono-value, .token-preview { font-family: 'Consolas', monospace; font-size: 11px; }
-.account-credentials .copy-value-code { border-color: var(--line); background: #f3f2ed; color: #7d8594; }
+.account-table .copy-value-code { background: transparent; border-color: transparent; color: #7d8594; }
 .status-pill { font-size: 11px; font-weight: 400; border-radius: 5px; padding: 3px 7px; }
 .status-pill.ok { background: #eaf3ed; color: #5d866d; border-color: #d5e5db; }
 .status-pill.muted { background: #eeeee9; color: #9b9e9d; border-color: #ddddda; }
@@ -373,6 +382,16 @@ input[type='checkbox'] { accent-color: var(--accent); }
   .auth-intro h2 { font-size: 31px; }
 }
 @media (max-width: 640px) {
+  .timeline-view { --timeline-left: 92px; }
+  .timeline-view .time-head strong { font-size: 8px; }
+  .timeline-view .time-head:not(.account-head) strong { font-size: 0; }
+  .timeline-view .time-head:nth-child(6n + 2) strong { font-size: 8px; }
+  .timeline-view .time-head small { display: none; }
+  .timeline-view .booking-bar { min-width: 0; padding-inline: 3px; }
+  .timeline-view .account-quick-edit { gap: 3px; padding-inline: 5px; font-size: 9px; white-space: nowrap; }
+  .timeline-view .account-quick-edit svg { width: 10px; flex-shrink: 0; }
+  .timeline-view .booking-bar.is-mine::before, .timeline-view .booking-bar.has-conflict::after { display: none; }
+  .timeline-view .empty-slot { inset-inline-start: 8px; max-width: calc(100% - 16px); font-size: 10px; }
   .app-shell > .topbar { padding-inline: 12px; gap: 7px; }
   .brand-home { font-size: 15px; gap: 7px; }
   .brand-home .brand-mark { width: 29px; height: 29px; padding: 6px; }

@@ -1273,18 +1273,6 @@ function Timeline({
   const [nameFilter, setNameFilter] = useState<string[]>([]);
   const [accountRailOpen, setAccountRailOpen] = useState(true);
   const [accountRailEnabled, setAccountRailEnabled] = useState(false);
-  const schedulerRef = useRef<HTMLDivElement>(null);
-  const schedulerDrag = useRef({
-    active: false,
-    moved: false,
-    captured: false,
-    pointerId: -1,
-    startX: 0,
-    startY: 0,
-    scrollLeft: 0,
-    scrollTop: 0,
-    suppressClickUntil: 0
-  });
   const autoBookings = useMemo(() => bookings.map(withAutoBookingStatus), [bookings]);
   const selectedNameSet = useMemo(() => new Set(nameFilter), [nameFilter]);
   const accountNameById = useMemo(() => new Map(accounts.map((account) => [account.id, account.name])), [accounts]);
@@ -1347,55 +1335,6 @@ function Timeline({
     setSelectedDate(getLocalDateValue(date));
   }
 
-  function startSchedulerDrag(event: React.PointerEvent<HTMLDivElement>) {
-    if (event.button !== 0) return;
-    const target = event.currentTarget;
-    schedulerDrag.current = {
-      active: true,
-      moved: false,
-      captured: false,
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
-      scrollLeft: target.scrollLeft,
-      scrollTop: target.scrollTop,
-      suppressClickUntil: 0
-    };
-  }
-
-  function moveSchedulerDrag(event: React.PointerEvent<HTMLDivElement>) {
-    const drag = schedulerDrag.current;
-    if (!drag.active || drag.pointerId !== event.pointerId) return;
-    const dx = event.clientX - drag.startX;
-    const dy = event.clientY - drag.startY;
-    if (!drag.moved && Math.hypot(dx, dy) > 4) {
-      drag.moved = true;
-      drag.captured = true;
-      event.currentTarget.classList.add('is-dragging');
-      event.currentTarget.setPointerCapture?.(event.pointerId);
-    }
-    if (!drag.moved) return;
-    event.preventDefault();
-    event.currentTarget.scrollLeft = drag.scrollLeft - dx;
-    event.currentTarget.scrollTop = drag.scrollTop - dy;
-  }
-
-  function endSchedulerDrag(event: React.PointerEvent<HTMLDivElement>) {
-    const drag = schedulerDrag.current;
-    if (!drag.active || drag.pointerId !== event.pointerId) return;
-    if (drag.moved) drag.suppressClickUntil = Date.now() + 90;
-    drag.active = false;
-    event.currentTarget.classList.remove('is-dragging');
-    if (drag.captured) event.currentTarget.releasePointerCapture?.(event.pointerId);
-  }
-
-  function suppressDraggedClick(event: React.MouseEvent<HTMLDivElement>) {
-    if (Date.now() <= schedulerDrag.current.suppressClickUntil) {
-      event.preventDefault();
-      event.stopPropagation();
-    }
-  }
-
   return (
     <div className="timeline-view">
       <div className="timeline-command">
@@ -1442,12 +1381,6 @@ function Timeline({
 
       <div
         className={`scheduler ${accountRailEnabled ? (accountRailOpen ? 'account-rail-open' : 'account-rail-collapsed') : ''}`}
-        ref={schedulerRef}
-        onPointerDown={startSchedulerDrag}
-        onPointerMove={moveSchedulerDrag}
-        onPointerUp={endSchedulerDrag}
-        onPointerCancel={endSchedulerDrag}
-        onClickCapture={suppressDraggedClick}
       >
         <button
           type="button"
@@ -3460,8 +3393,9 @@ function AccountsPanel({ user, settings, accounts, refresh }: { user: User; sett
               <input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} aria-label="选择当前列表账号" />
             </label>
           )}
-          <span>账号信息</span>
-          <span>密码与时间</span>
+          <span>游戏名称</span>
+          <span>账号</span>
+          <span>密码</span>
           <span>状态</span>
           <span>备注</span>
           <span>操作</span>
@@ -3499,8 +3433,9 @@ function AccountsPanel({ user, settings, accounts, refresh }: { user: User; sett
                 <input type="checkbox" checked={selectedIds.has(account.id)} onChange={() => toggleSelected(account.id)} aria-label={`选择${account.name}`} />
               </label>
             )}
-            <div className="account-identity"><CopyValue account={account} value={account.name} className="copy-value-name" /><CopyValue account={account} value={account.login} /><small>账号</small></div>
-            <div className="account-credentials"><CopyValue account={account} value={account.password} className="copy-value-code" /><small>创建 {formatDateTime(account.created_at)}</small></div>
+            <CopyValue account={account} value={account.name} className="copy-value-name" />
+            <CopyValue account={account} value={account.login} />
+            <CopyValue account={account} value={account.password} className="copy-value-code" />
             <div className="status-toggle-cell">
               <span className={`status-pill ${account.status === 'active' ? 'ok' : 'muted'}`}>{account.status === 'active' ? '正常' : '停用'}</span>
               {user.role === 'admin' && (
