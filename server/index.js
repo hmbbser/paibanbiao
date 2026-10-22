@@ -13,7 +13,7 @@ import { nanoid } from 'nanoid';
 import { fileURLToPath } from 'node:url';
 import { allRows, db, isSetupComplete, migrate, replaceAllData, TABLES } from './db.js';
 import { createMailService, createReadStateStore } from './mail-service.js';
-import { registerMailRoutes } from './mail-routes.js';
+import { registerMailCodeRoute, registerMailRoutes } from './mail-routes.js';
 import { createUpdateService, createUpdateWriteGuard, registerUpdateRoutes } from './update-service.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -598,27 +598,7 @@ app.delete('/api/accounts/:id', requireAuth, requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/accounts/:id/mail-code', requireAuth, async (req, res) => {
-  res.setHeader('Cache-Control', 'no-store');
-  const account = db.prepare('SELECT * FROM accounts WHERE id = ?').get(req.params.id);
-  if (!account) return res.status(404).json({ error: '账号不存在' });
-  const requestAt = now();
-  let recipient = '';
-  try {
-    const mailbox = mailboxForAccount(account);
-    recipient = expectedRecipientForAccount(account, mailbox);
-    const result = await mailService.find(mailbox, recipient, { requestAt, latest: true });
-    if (!result) {
-      audit(req.user.id, 'lookup_failed', 'mail_code', account.id, `获取登录验证码失败 ${account.name} (${account.login})，收件人 ${recipient}，未找到 Steam 登录邮件`);
-      return res.status(404).json({ error: `未找到发给 ${recipient} 的 Steam 登录验证码，请检查收件人设置，或打开收件箱查看邮件` });
-    }
-    audit(req.user.id, 'lookup', 'mail_code', account.id, `获取登录验证码 ${account.name} (${account.login})，收件人 ${recipient}，文件夹 ${result.mailbox}，邮件时间 ${result.receivedAt || '-'}`);
-    res.json(result);
-  } catch (error) {
-    audit(req.user.id, 'lookup_failed', 'mail_code', account.id, `获取登录验证码失败 ${account.name} (${account.login})${recipient ? `，收件人 ${recipient}` : ''}，原因 ${error.message || '未知错误'}`);
-    res.status(error.status || 500).json({ error: error.message || '获取验证码失败，请联系管理员' });
-  }
-});
+registerMailCodeRoute(app, { requireAuth, db, mailService, mailboxForAccount, expectedRecipientForAccount, audit, now });
 
 app.post('/api/accounts/:id/password-reset-link', requireAuth, async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');

@@ -31,6 +31,7 @@ import {
 import './styles.css';
 import { InboxButton } from './MailInbox';
 import { UpdatePanel } from './UpdatePanel';
+import { createMailCodeLookup, type MailCodeResponse } from './mail-code-client.js';
 import './workspace.css';
 
 type Role = 'admin' | 'user';
@@ -39,7 +40,7 @@ type AppSettings = { siteName: string; timezone: string; defaultView: string; ex
 type Account = { id: string; name: string; login: string; password: string; remark: string; status: string; mailbox_id?: string; sort_order?: number; created_at: string };
 type AccountName = { id: string; name: string; created_at: string };
 type Mailbox = { id: string; email: string; password: string; remark: string; client_id: string; refresh_token: string; created_at: string; updated_at: string };
-type MailCodeResult = { code: string; email: string; recipient?: string; mailbox?: string; subject?: string; sender?: string; receivedAt?: string };
+type MailCodeResult = MailCodeResponse;
 type PasswordResetLinkResult = { link: string; email: string; recipient?: string; mailbox?: string; subject?: string; sender?: string; receivedAt?: string };
 type BookingStatus = 'reserved' | 'active' | 'completed' | 'ended_early' | 'cancelled';
 type Booking = {
@@ -100,8 +101,14 @@ async function api<T>(url: string, options: RequestInit = {}): Promise<T> {
   });
   const isJson = res.headers.get('content-type')?.includes('application/json');
   const data = isJson ? await res.json() : await res.text();
-  if (!res.ok) throw new Error(data?.error || '请求失败');
+  if (!res.ok) throw Object.assign(new Error(data?.error || '请求失败'), { code: data?.code, receivedAt: data?.receivedAt });
   return data;
+}
+
+function useMailCodeLookup() {
+  const client = useMemo(() => createMailCodeLookup({ request: api }), []);
+  useEffect(() => () => client.cancel(), [client]);
+  return client.lookup;
 }
 
 async function copyTextToClipboard(text: string) {
@@ -574,7 +581,8 @@ async function mockApi<T>(url: string, options: RequestInit = {}): Promise<T> {
       mailbox: 'Junk',
       subject: 'ご利用のSteamアカウントに新しいWebまたはモバイル機器からのアクセスがありました',
       sender: 'noreply_at_steampowered_com_demo@icloud.com',
-      receivedAt: new Date().toISOString()
+      receivedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 5 * 60_000).toISOString()
     };
     addMockAudit(state, sessionUser, 'lookup', 'mail_code', `获取登录验证码 ${account.name} (${account.login})，收件人 ${email}，验证码 ${mockCode}，文件夹 ${result.mailbox}，邮件时间 ${result.receivedAt}，主题 ${result.subject}`);
     saveMockState(state);
@@ -2100,6 +2108,8 @@ function BookingDetailModal({
   const [toastTone, setToastTone] = useState<'success' | 'danger' | 'info'>('success');
   const [mailCode, setMailCode] = useState<MailCodeResult | null>(null);
   const [mailCodeLoading, setMailCodeLoading] = useState(false);
+  const [mailCodeError, setMailCodeError] = useState('');
+  const lookupMailCode = useMailCodeLookup();
   const [passwordResetLink, setPasswordResetLink] = useState<PasswordResetLinkResult | null>(null);
   const [passwordResetLoading, setPasswordResetLoading] = useState(false);
   const copyToastTimer = useRef<number | null>(null);
@@ -2139,12 +2149,15 @@ function BookingDetailModal({
   async function fetchLoginCode() {
     setMailCodeLoading(true);
     setMailCode(null);
+    setMailCodeError('');
     try {
-      const result = await api<MailCodeResult>(`/api/accounts/${booking.account_id}/mail-code`, { method: 'POST' });
+      const result = await lookupMailCode(booking.account_id);
       setMailCode(result);
       await copyTextToClipboard(result.code);
       showCopyToast(mailCodeCopyMessage(result));
     } catch (error) {
+      if ((error as Error).name === 'AbortError') return;
+      setMailCodeError((error as Error).message);
       showCopyToast((error as Error).message, 'danger');
     } finally {
       setMailCodeLoading(false);
@@ -2187,7 +2200,7 @@ function BookingDetailModal({
           <DetailItem label="备注" value={booking.remark || '-'} onCopy={copyField} />
         </div>
         <div className="modal-actions detail-actions account-detail-actions">
-          <button className={`soft-btn login-code-action ${mailCode ? 'has-code' : ''}`} onClick={fetchLoginCode} disabled={mailCodeLoading} title={mailCodeTitle(mailCode)}><Mail size={16} /><MailCodeLabel result={mailCode} loading={mailCodeLoading} /></button>
+          <button className={`soft-btn login-code-action ${mailCode ? 'has-code' : ''}`} onClick={fetchLoginCode} disabled={mailCodeLoading} title={mailCodeError || mailCodeTitle(mailCode)}><Mail size={16} /><MailCodeLabel result={mailCode} loading={mailCodeLoading} error={mailCodeError} /></button>
           <button className={`soft-btn reset-link-action ${passwordResetLink ? 'has-link' : ''}`} onClick={fetchPasswordResetLink} disabled={passwordResetLoading}><KeyRound size={16} />{passwordResetLoading ? '\u83b7\u53d6\u4e2d...' : (passwordResetLink ? '\u94fe\u63a5\u5df2\u590d\u5236' : '\u91cd\u7f6e\u5bc6\u7801')}</button>
           <InboxButton baseUrl={`/api/accounts/${booking.account_id}/messages`} api={api} className="soft-btn" />
           <button className="soft-btn" onClick={copyBooking}><Copy size={16} />复制</button>
@@ -2342,6 +2355,8 @@ function AccountDetailModal({
   const [toastTone, setToastTone] = useState<'success' | 'danger' | 'info'>('success');
   const [mailCode, setMailCode] = useState<MailCodeResult | null>(null);
   const [mailCodeLoading, setMailCodeLoading] = useState(false);
+  const [mailCodeError, setMailCodeError] = useState('');
+  const lookupMailCode = useMailCodeLookup();
   const [passwordResetLink, setPasswordResetLink] = useState<PasswordResetLinkResult | null>(null);
   const [passwordResetLoading, setPasswordResetLoading] = useState(false);
   const copyToastTimer = useRef<number | null>(null);
@@ -2382,12 +2397,15 @@ function AccountDetailModal({
   async function fetchLoginCode() {
     setMailCodeLoading(true);
     setMailCode(null);
+    setMailCodeError('');
     try {
-      const result = await api<MailCodeResult>(`/api/accounts/${account.id}/mail-code`, { method: 'POST' });
+      const result = await lookupMailCode(account.id);
       setMailCode(result);
       await copyTextToClipboard(result.code);
       showCopyToast(mailCodeCopyMessage(result));
     } catch (error) {
+      if ((error as Error).name === 'AbortError') return;
+      setMailCodeError((error as Error).message);
       showCopyToast((error as Error).message, 'danger');
     } finally {
       setMailCodeLoading(false);
@@ -2459,7 +2477,7 @@ function AccountDetailModal({
           <DetailItem label="创建时间" value={formatDateTime(account.created_at)} onCopy={copyField} />
         </div>
         <div className="modal-actions detail-actions account-detail-actions">
-          <button className={`soft-btn login-code-action ${mailCode ? 'has-code' : ''}`} onClick={fetchLoginCode} disabled={mailCodeLoading} title={mailCodeTitle(mailCode)}><Mail size={16} /><MailCodeLabel result={mailCode} loading={mailCodeLoading} /></button>
+          <button className={`soft-btn login-code-action ${mailCode ? 'has-code' : ''}`} onClick={fetchLoginCode} disabled={mailCodeLoading} title={mailCodeError || mailCodeTitle(mailCode)}><Mail size={16} /><MailCodeLabel result={mailCode} loading={mailCodeLoading} error={mailCodeError} /></button>
           <button className={`soft-btn reset-link-action ${passwordResetLink ? 'has-link' : ''}`} onClick={fetchPasswordResetLink} disabled={passwordResetLoading}><KeyRound size={16} />{passwordResetLoading ? '\u83b7\u53d6\u4e2d...' : (passwordResetLink ? '\u94fe\u63a5\u5df2\u590d\u5236' : '\u91cd\u7f6e\u5bc6\u7801')}</button>
           <InboxButton baseUrl={`/api/accounts/${account.id}/messages`} api={api} className="soft-btn" />
           <button className="soft-btn" onClick={copyAccount}><Copy size={16} />复制</button>
@@ -2499,16 +2517,29 @@ function DetailItem({ label, value, onCopy }: { label: string; value: string; on
 }
 
 function mailCodeTitle(result?: MailCodeResult | null) {
-  return result?.receivedAt ? `最新验证码 · 邮件接收时间：${formatDateTime(result.receivedAt)} · 点击重新获取` : '获取最新登录验证码';
+  return result?.receivedAt ? `邮件接收时间：${formatDateTime(result.receivedAt)} · 点击等待更新的验证码` : '获取最近 5 分钟内的验证码；新邮件未到时最多等待 2 分钟';
 }
 
 function mailCodeCopyMessage(result: MailCodeResult) {
   return result.receivedAt ? `验证码已复制 · 邮件时间：${formatDateTime(result.receivedAt)}` : '验证码已复制';
 }
 
-function MailCodeLabel({ result, loading }: { result?: MailCodeResult | null; loading: boolean }) {
-  if (loading) return <>获取中...</>;
+function MailCodeLabel({ result, loading, error }: { result?: MailCodeResult | null; loading: boolean; error?: string }) {
+  const [currentTime, setCurrentTime] = useState(Date.now);
+  useEffect(() => {
+    setCurrentTime(Date.now());
+    if (!result) return;
+    const timer = window.setTimeout(() => setCurrentTime(Date.now()), Math.max(0, Date.parse(result.expiresAt) - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [result]);
+  if (loading) return <span className="mail-code-label"><strong>等待最新验证码…</strong><small>请在 Steam 发送 · 最多 2 分钟</small></span>;
+  if (error) {
+    const hint = error.includes('无法提取验证码') ? '最新邮件解析失败，请打开收件箱'
+      : error.includes('仍未收到新验证码') ? '未收到新邮件，请在 Steam 重新发送' : error;
+    return <span className="mail-code-label mail-code-error" role="alert"><strong>获取失败 · 点击重试</strong><small>{hint}</small></span>;
+  }
   if (!result) return <>登陆验证码</>;
+  if (Date.parse(result.expiresAt) <= Math.max(currentTime, Date.now())) return <span className="mail-code-label"><strong>验证码已过旧</strong><small>点击等待新邮件</small></span>;
   return <span className="mail-code-label"><strong>{result.code}</strong>{result.receivedAt && <small>邮件 {formatDateTime(result.receivedAt)}</small>}</span>;
 }
 
@@ -3070,6 +3101,8 @@ function AccountsPanel({ user, settings, accounts, refresh }: { user: User; sett
   const [toggleLoadingId, setToggleLoadingId] = useState('');
   const [mailCodeLoadingId, setMailCodeLoadingId] = useState('');
   const [mailCodes, setMailCodes] = useState<Record<string, MailCodeResult>>({});
+  const [mailCodeErrors, setMailCodeErrors] = useState<Record<string, string>>({});
+  const lookupMailCode = useMailCodeLookup();
   const [passwordResetLoadingId, setPasswordResetLoadingId] = useState('');
   const [passwordResetLinks, setPasswordResetLinks] = useState<Record<string, PasswordResetLinkResult>>({});
   const [draggingAccountId, setDraggingAccountId] = useState('');
@@ -3216,12 +3249,15 @@ function AccountsPanel({ user, settings, accounts, refresh }: { user: User; sett
   async function fetchLoginCode(account: Account) {
     setMailCodeLoadingId(account.id);
     setMailCodes((current) => { const next = { ...current }; delete next[account.id]; return next; });
+    setMailCodeErrors((current) => { const next = { ...current }; delete next[account.id]; return next; });
     try {
-      const result = await api<MailCodeResult>(`/api/accounts/${account.id}/mail-code`, { method: 'POST' });
+      const result = await lookupMailCode(account.id);
       setMailCodes((current) => ({ ...current, [account.id]: result }));
       await copyTextToClipboard(result.code);
       showCopyToast(mailCodeCopyMessage(result));
     } catch (error) {
+      if ((error as Error).name === 'AbortError') return;
+      setMailCodeErrors((current) => ({ ...current, [account.id]: (error as Error).message }));
       showCopyToast((error as Error).message, 'danger');
     } finally {
       setMailCodeLoadingId('');
@@ -3433,11 +3469,11 @@ function AccountsPanel({ user, settings, accounts, refresh }: { user: User; sett
                 type="button"
                 className={`ghost-action login-code-action ${mailCodes[account.id] ? 'has-code' : ''}`}
                 onClick={() => fetchLoginCode(account)}
-                disabled={mailCodeLoadingId === account.id}
-                title={mailCodeTitle(mailCodes[account.id])}
+                disabled={Boolean(mailCodeLoadingId)}
+                title={mailCodeErrors[account.id] || mailCodeTitle(mailCodes[account.id])}
               >
                 <Mail size={14} />
-                <MailCodeLabel result={mailCodes[account.id]} loading={mailCodeLoadingId === account.id} />
+                <MailCodeLabel result={mailCodes[account.id]} loading={mailCodeLoadingId === account.id} error={mailCodeErrors[account.id]} />
               </button>
               <button
                 type="button"
@@ -3543,11 +3579,11 @@ function AccountsPanel({ user, settings, accounts, refresh }: { user: User; sett
                   type="button"
                   className={`ghost-action login-code-action ${mailCodes[account.id] ? 'has-code' : ''}`}
                   onClick={() => fetchLoginCode(account)}
-                  disabled={mailCodeLoadingId === account.id}
-                  title={mailCodeTitle(mailCodes[account.id])}
+                  disabled={Boolean(mailCodeLoadingId)}
+                  title={mailCodeErrors[account.id] || mailCodeTitle(mailCodes[account.id])}
                 >
                   <Mail size={14} />
-                  <MailCodeLabel result={mailCodes[account.id]} loading={mailCodeLoadingId === account.id} />
+                  <MailCodeLabel result={mailCodes[account.id]} loading={mailCodeLoadingId === account.id} error={mailCodeErrors[account.id]} />
                 </button>
                 <button
                   type="button"
@@ -4618,7 +4654,7 @@ function SettingsPanel({ user, settings, onSettings }: { user: User; settings: A
           </section>
           <section hidden={category !== 'preferences'}>
             <div className="settings-section-heading"><h2>运行与日志</h2><p>设置邮件查询范围和操作日志保留策略。</p></div>
-            <div className="settings-block"><h3>邮件查询</h3><div className="settings-fields"><Field label="重置链接匹配时间窗口（分钟）" type="number" value={form.mailLookupWindowMinutes || defaultSettings.mailLookupWindowMinutes || '10'} onChange={mailLookupWindowMinutes => setForm({ ...form, mailLookupWindowMinutes })} /></div><p className="field-help">登录验证码始终按接收时间获取最新匹配邮件，并显示邮件时间；此窗口仅用于重置密码链接。收件箱阅读功能不受限制。</p></div>
+            <div className="settings-block"><h3>邮件查询</h3><div className="settings-fields"><Field label="重置链接匹配时间窗口（分钟）" type="number" value={form.mailLookupWindowMinutes || defaultSettings.mailLookupWindowMinutes || '10'} onChange={mailLookupWindowMinutes => setForm({ ...form, mailLookupWindowMinutes })} /></div><p className="field-help">登录验证码只接受最近 5 分钟内最新的登录邮件，重复获取时等待比上次更新的邮件，最多等待 2 分钟；此窗口仅用于重置密码链接。收件箱阅读功能不受限制。</p></div>
             <div className="settings-block"><h3>操作日志</h3><div className="settings-fields">
               <FancySelect label="日志保留时间" value={form.auditRetentionDays || '7'} options={[{ value: '3', label: '保留 3 天' }, { value: '7', label: '保留 7 天' }, { value: '30', label: '保留 30 天' }, { value: 'custom', label: '自定义天数' }]} onChange={auditRetentionDays => setForm({ ...form, auditRetentionDays })} />
               {form.auditRetentionDays === 'custom' && <Field label="自定义保留天数" value={form.auditRetentionCustomDays || ''} onChange={auditRetentionCustomDays => setForm({ ...form, auditRetentionCustomDays })} />}

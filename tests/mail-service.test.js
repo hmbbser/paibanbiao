@@ -9,7 +9,7 @@ import Database from 'better-sqlite3';
 import express from 'express';
 import session from 'express-session';
 import { createMailService, createReadStateStore, fetchGraphFolder, fetchImapFolder, MAIL_FOLDERS, normalizeImapMessage, recipientMatches, requestMicrosoftToken, resolveImapFolder, scanMessages, withinLookupWindow } from '../server/mail-service.js';
-import { registerMailRoutes } from '../server/mail-routes.js';
+import { registerMailCodeRoute, registerMailRoutes } from '../server/mail-routes.js';
 
 const requestAt = '2026-10-20T10:00:00Z';
 const mailbox = { id: 'mailbox-1', email: 'box@example.com', client_id: 'test-client', refresh_token: 'test-refresh' };
@@ -52,19 +52,20 @@ test('invalid lookup windows are rejected before contacting either provider', as
   assert.equal(calls, 0);
 });
 
-test('latest code lookup ignores age, filters future mail and recipients, and compares both folders', async () => {
+test('latest code lookup filters future mail and recipients and compares fresh mail in both folders', async () => {
   const optionsSeen = [];
   const service = createMailService({ token: async () => 'token', graphFolder: async (_token, folder, options) => {
     optionsSeen.push(options);
     return { hasMore: false, messages: folder.label === 'Inbox' ? [
       message('future', '2026-10-20T10:00:01Z', 'F9F9F'),
       message('other', '2026-10-20T09:59:00Z', 'E8E8E', { to: ['other@example.com'] }),
-      message('inbox', '2026-10-19T01:00:00Z', 'A1A1A')
-    ] : [message('junk', '2026-10-19T02:00:00Z', 'Z9Z9Z', { mailbox: 'Junk' })] };
+      message('inbox', '2026-10-20T09:57:00Z', 'A1A1A')
+    ] : [message('junk', '2026-10-20T09:58:00Z', 'Z9Z9Z', { mailbox: 'Junk' })] };
   } });
   const result = await service.find(mailbox, 'alias@example.com', { requestAt, latest: true });
   assert.equal(result.code, 'Z9Z9Z');
-  assert.equal(result.receivedAt, '2026-10-19T02:00:00Z');
+  assert.equal(result.receivedAt, '2026-10-20T09:58:00Z');
+  assert.equal(result.expiresAt, '2026-10-20T10:03:00.000Z');
   assert.equal(result.mailbox, 'Junk');
   assert.ok(optionsSeen.every(options => !options.since && options.expectedEmail === 'alias@example.com'));
   await assert.rejects(service.find(mailbox, 'alias@example.com', { requestAt: '', latest: true }), { code: 'INVALID_LOOKUP_WINDOW' });
@@ -76,13 +77,47 @@ test('latest lookup retains incomplete-folder errors and IMAP fallback for the n
     return { hasMore: false, messages: [message('old', '2026-10-18T09:00:00Z')] };
   }, imapFolder: async (_box, _token, folder, options) => {
     assert.equal(options.latest, true);
-    return { hasMore: false, messages: [message('new', '2026-10-19T09:00:00Z', 'Z9Z9Z', { mailbox: folder.label })] };
+    return { hasMore: false, messages: [message('new', '2026-10-20T09:59:00Z', 'Z9Z9Z', { mailbox: folder.label })] };
   } });
   assert.equal((await service.find(mailbox, 'alias@example.com', { requestAt, latest: true })).code, 'Z9Z9Z');
   const incomplete = createMailService({ token: async () => 'token', graphFolder: async (_token, folder) => ({
     hasMore: folder.label === 'Junk', messages: [message(folder.label, '2026-10-19T09:00:00Z')]
   }) });
   await assert.rejects(incomplete.find(mailbox, 'alias@example.com', { requestAt, latest: true }), { code: 'MAIL_INCOMPLETE' });
+});
+
+test('latest code rejects historical mail, repeat mail and unreadable latest login mail', async () => {
+  let records = [message('old', '2026-10-20T08:49:37Z', 'RTW4X')];
+  const service = createMailService({ token: async () => 'token', graphFolder: async (_token, folder) => ({
+    hasMore: false, messages: folder.label === 'Inbox' ? records : []
+  }) });
+  await assert.rejects(service.find(mailbox, 'alias@example.com', { requestAt, latest: true }), { code: 'MAIL_CODE_STALE', status: 409, receivedAt: records[0].receivedAt });
+  records = [message('fresh', '2026-10-20T09:59:00Z')];
+  await assert.rejects(service.find(mailbox, 'alias@example.com', { requestAt, latest: true, afterReceivedAt: records[0].receivedAt }), { code: 'MAIL_CODE_NOT_NEW' });
+  assert.ok(await service.find(mailbox, 'alias@example.com', { requestAt, latest: true, afterReceivedAt: '2026-10-20T09:58:59Z' }));
+  await assert.rejects(service.find(mailbox, 'alias@example.com', { requestAt, latest: true, afterReceivedAt: 'invalid' }), { code: 'INVALID_LOOKUP_WINDOW' });
+  records.unshift(message('unreadable', '2026-10-20T09:59:30Z', '', { subject: '您的 Steam 帐户：来自新网页或移动设备的访问', text: 'Body temporarily missing' }));
+  await assert.rejects(service.find(mailbox, 'alias@example.com', { requestAt, latest: true }), { code: 'MAIL_CODE_UNREADABLE', status: 422 });
+});
+
+test('unreadable older login in one folder cannot override a newer code in the other folder', async () => {
+  const service = createMailService({ token: async () => 'token', graphFolder: (token, folder, options) => fetchGraphFolder(token, folder, options, async () => response([
+    graphMessage(folder.label, { receivedDateTime: folder.label === 'Inbox' ? '2026-10-20T09:59:00Z' : '2026-10-20T09:58:00Z', subject: 'Steam Guard',
+      body: { contentType: 'text', content: folder.label === 'Inbox' ? 'Steam Guard code: HFCP5' : 'Steam Guard code: [missing]' } })
+  ])) });
+  assert.equal((await service.find(mailbox, 'alias@example.com', { requestAt, latest: true })).code, 'HFCP5');
+});
+
+test('Graph stops at an unreadable newest login instead of paging back to an old code', async () => {
+  const options = { latest: true, requestAt, expectedEmail: 'alias@example.com', kind: 'code' };
+  let calls = 0;
+  const result = await fetchGraphFolder('token', MAIL_FOLDERS[0], options, async () => {
+    calls += 1;
+    assert.equal(calls, 1);
+    return response([graphMessage('broken', { subject: 'Steam Guard', body: { contentType: 'text', content: 'Your Steam Guard code: [missing]' } })], 'https://graph.microsoft.com/v1.0/me/messages?$skiptoken=older');
+  });
+  assert.equal(result.hasMore, false);
+  assert.throws(() => scanMessages(result.messages, 'alias@example.com', options), { code: 'MAIL_CODE_UNREADABLE' });
 });
 
 test('Graph latest code lookup passes 100 unrelated messages and stops after the first matching page', async () => {
@@ -422,4 +457,43 @@ test('message routes enforce authentication, admin mailbox access, listing grant
     assert.equal(recipients.at(-1), '');
     assert.equal((await request('/api/accounts/missing/messages', adminCookie)).status, 404);
   } finally { await new Promise((resolve) => server.close(resolve)); }
+});
+
+test('code route returns typed stale, missing and unreadable errors and keeps every query fresh', async () => {
+  const app = express();
+  app.use(express.json());
+  let responseMode = 'stale';
+  const optionsSeen = [];
+  const audits = [];
+  registerMailCodeRoute(app, {
+    requireAuth: (req, res, next) => { if (!req.headers.authorization) return res.sendStatus(401); req.user = { id: 'user' }; next(); },
+    db: { prepare: () => ({ get: id => id === 'account' ? { id, name: 'Test', login: 'test' } : undefined }) },
+    mailboxForAccount: () => mailbox, expectedRecipientForAccount: () => 'alias@example.com', now: () => requestAt,
+    audit: (...args) => audits.push(args),
+    mailService: { find: async (_mailbox, _recipient, options) => {
+      optionsSeen.push(options);
+      if (responseMode === 'missing') return null;
+      if (responseMode === 'success') return { code: 'HFCP5', receivedAt: '2026-10-20T09:59:00Z', expiresAt: '2026-10-20T10:04:00Z' };
+      throw Object.assign(new Error(responseMode), { status: responseMode === 'stale' ? 409 : 422, code: responseMode === 'stale' ? 'MAIL_CODE_STALE' : 'MAIL_CODE_UNREADABLE', receivedAt: '2026-10-20T08:49:37Z' });
+    } }
+  });
+  const server = await new Promise(resolve => { const instance = app.listen(0, '127.0.0.1', () => resolve(instance)); });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const request = (id = 'account', authorized = true) => fetch(`${base}/api/accounts/${id}/mail-code`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(authorized ? { Authorization: 'test' } : {}) }, body: JSON.stringify({ afterReceivedAt: '2026-10-20T09:58:00Z' }) });
+  try {
+    assert.equal((await request('account', false)).status, 401);
+    assert.equal((await request('unknown')).status, 404);
+    for (const [mode, status, code] of [['stale', 409, 'MAIL_CODE_STALE'], ['missing', 404, 'MAIL_CODE_MISSING'], ['unreadable', 422, 'MAIL_CODE_UNREADABLE'], ['success', 200, undefined]]) {
+      responseMode = mode;
+      const response = await request();
+      assert.equal(response.status, status);
+      assert.equal(response.headers.get('cache-control'), 'no-store');
+      const body = await response.json();
+      if (mode === 'success') assert.equal(body.code, 'HFCP5');
+      else assert.equal(body.code, code);
+    }
+    assert.equal(optionsSeen.length, 4);
+    assert.ok(optionsSeen.every(options => options.latest && options.requestAt === requestAt && options.afterReceivedAt === '2026-10-20T09:58:00Z'));
+    assert.equal(audits.length, 4);
+  } finally { await new Promise(resolve => server.close(resolve)); }
 });

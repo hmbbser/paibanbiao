@@ -1,11 +1,13 @@
 import { createHash } from 'node:crypto';
-import { extractSteamGuardCode, extractSteamRecoveryLink } from './steam-mail.js';
+import { extractSteamGuardCode, extractSteamRecoveryLink, isSteamLoginMessage } from './steam-mail.js';
 
 export const MAIL_FOLDERS = [
   { label: 'Inbox', graph: 'inbox' },
   { label: 'Junk', graph: 'junkemail' }
 ];
 export const BROWSE_LIMIT = 100;
+// A freshness policy, not a promise about Steam's own code expiry.
+export const MAIL_CODE_MAX_AGE_MINUTES = 5;
 const emailPattern = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
 const recipientHeaders = ['to', 'cc', 'delivered-to', 'x-original-to', 'envelope-to', 'resent-to'];
 const normalizeEmail = (value) => String(value || '').trim().toLowerCase();
@@ -47,7 +49,11 @@ function lookupOptions(options) {
   const requestAt = options.requestAt ?? new Date().toISOString();
   if (options.latest === true) {
     if (!Number.isFinite(Date.parse(requestAt))) throw mailError('邮件查询时间无效', 'INVALID_LOOKUP_WINDOW', 400);
-    return { requestAt, latest: true };
+    const afterReceivedAt = options.afterReceivedAt;
+    if (afterReceivedAt != null && (typeof afterReceivedAt !== 'string' || !Number.isFinite(Date.parse(afterReceivedAt)))) {
+      throw mailError('上次验证码邮件时间无效', 'INVALID_LOOKUP_WINDOW', 400);
+    }
+    return { requestAt, latest: true, ...(afterReceivedAt != null ? { afterReceivedAt } : {}) };
   }
   const windowMinutes = Number(options.windowMinutes ?? 10);
   const since = new Date(Date.parse(requestAt) - windowMinutes * 60_000);
@@ -66,6 +72,26 @@ export function scanMessages(messages, expectedEmail, options, kind = 'code') {
       if (!Number.isFinite(receivedTime) || receivedTime > Date.parse(options.requestAt)) continue;
     } else if (!withinLookupWindow(message.receivedAt, options.requestAt, options.windowMinutes)) continue;
     const value = extractor(message);
+    if (kind === 'code' && options.latest && (value || isSteamLoginMessage(message))) {
+      // Select the newest login message first. Folder collectors use a preview
+      // so an unreadable older message cannot override a newer one elsewhere.
+      if (!options.preview) {
+        let error;
+        if (options.maxAgeMinutes && !withinLookupWindow(message.receivedAt, options.requestAt, options.maxAgeMinutes)) {
+          error = mailError(`最新验证码邮件已超过 ${options.maxAgeMinutes} 分钟，请在 Steam 请求新验证码后重试`, 'MAIL_CODE_STALE', 409);
+        } else if (options.afterReceivedAt && Date.parse(message.receivedAt) <= Date.parse(options.afterReceivedAt)) {
+          error = mailError('尚未收到比上次更新的验证码邮件，请在 Steam 请求新验证码', 'MAIL_CODE_NOT_NEW', 409);
+        } else if (!value) {
+          error = mailError('最新 Steam 登录邮件无法提取验证码，请打开收件箱查看；不会返回旧验证码', 'MAIL_CODE_UNREADABLE', 422);
+        }
+        if (error) throw Object.assign(error, { receivedAt: message.receivedAt });
+      }
+      return {
+        code: value, email: normalizeEmail(expectedEmail), recipient: normalizeEmail(expectedEmail),
+        mailbox: message.mailbox, subject: message.subject || '', sender: message.sender || '', receivedAt: message.receivedAt,
+        ...(options.maxAgeMinutes ? { expiresAt: new Date(Date.parse(message.receivedAt) + options.maxAgeMinutes * 60_000).toISOString() } : {})
+      };
+    }
     if (value) return {
       [kind]: value, email: normalizeEmail(expectedEmail), recipient: normalizeEmail(expectedEmail),
       mailbox: message.mailbox, subject: message.subject || '', sender: message.sender || '', receivedAt: message.receivedAt
@@ -147,7 +173,7 @@ export async function fetchGraphFolder(accessToken, folder, options = {}, fetchI
     next = data['@odata.nextLink'] || '';
     // Graph orders pages by receipt time. Once this folder has a match, every
     // unread page is older; the other folder is checked independently.
-    if (options.latest && scanMessages(messages, options.expectedEmail, options, options.kind)) return { messages: sortMessages(messages), hasMore: false };
+    if (options.latest && scanMessages(messages, options.expectedEmail, { ...options, preview: true }, options.kind)) return { messages: sortMessages(messages), hasMore: false };
     if (!options.latest && !options.since && messages.length >= BROWSE_LIMIT) return { messages: sortMessages(messages).slice(0, BROWSE_LIMIT), hasMore: Boolean(next) || messages.length > BROWSE_LIMIT };
   }
   return { messages: sortMessages(messages), hasMore: false };
@@ -279,7 +305,7 @@ export async function fetchImapFolder(mailbox, accessToken, folder, options = {}
         for (let start = 0; start < selected.length; start += 100) {
           const rows = await fetchImapBatch(imap, selected.slice(start, start + 100).map((row) => row.attributes.uid), true, simpleParser);
           messages.push(...rows.map(({ mail, attributes }) => normalizeImapMessage(mail, attributes, { ...folder, path: folderPath }, box.uidvalidity)));
-          if (options.latest && scanMessages(messages, options.expectedEmail, options, options.kind)) break;
+          if (options.latest && scanMessages(messages, options.expectedEmail, { ...options, preview: true }, options.kind)) break;
         }
         finish(null, { messages: sortMessages(messages), hasMore: ordered.length > selected.length });
       } catch (error) { finish(error); }
@@ -332,6 +358,7 @@ export function createMailService(dependencies = {}) {
     },
     async find(mailbox, expectedEmail, options = {}, kind = 'code') {
       const window = lookupOptions(options);
+      if (window.latest && kind === 'code') window.maxAgeMinutes = MAIL_CODE_MAX_AGE_MINUTES;
       const result = await collect(mailbox, { ...window, expectedEmail, kind, requireComplete: true });
       return scanMessages(result.messages, expectedEmail, window, kind);
     }

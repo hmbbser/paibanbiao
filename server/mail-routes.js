@@ -1,5 +1,25 @@
 import { mailError } from './mail-service.js';
 
+export function registerMailCodeRoute(app, { requireAuth, db, mailService, mailboxForAccount, expectedRecipientForAccount, audit, now = () => new Date().toISOString() }) {
+  app.post('/api/accounts/:id/mail-code', requireAuth, async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const account = db.prepare('SELECT * FROM accounts WHERE id = ?').get(req.params.id);
+    if (!account) return res.status(404).json({ error: '账号不存在', code: 'NOT_FOUND' });
+    let recipient = '';
+    try {
+      const mailbox = mailboxForAccount(account);
+      recipient = expectedRecipientForAccount(account, mailbox);
+      const result = await mailService.find(mailbox, recipient, { requestAt: now(), latest: true, afterReceivedAt: req.body?.afterReceivedAt });
+      if (!result) throw mailError('尚未收到 Steam 登录验证码，请在 Steam 请求新验证码', 'MAIL_CODE_MISSING', 404);
+      audit(req.user.id, 'lookup', 'mail_code', account.id, `获取登录验证码 ${account.name} (${account.login})，收件人 ${recipient}，文件夹 ${result.mailbox}，邮件时间 ${result.receivedAt || '-'}`);
+      res.json(result);
+    } catch (error) {
+      audit(req.user.id, 'lookup_failed', 'mail_code', account.id, `获取登录验证码失败 ${account.name} (${account.login})${recipient ? `，收件人 ${recipient}` : ''}，原因 ${error.message || '未知错误'}`);
+      res.status(error.status || 500).json({ error: error.status ? error.message : '获取验证码失败，请联系管理员', code: error.code || 'MAIL_UNAVAILABLE', ...(error.receivedAt ? { receivedAt: error.receivedAt } : {}) });
+    }
+  });
+}
+
 export function registerMailRoutes(app, { requireAuth, requireAdmin, db, mailService, readState, mailboxForAccount, expectedRecipientForAccount }) {
   function context(req, kind) {
     if (kind === 'accounts') {

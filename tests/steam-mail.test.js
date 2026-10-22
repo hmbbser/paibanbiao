@@ -1,9 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { extractSteamGuardCode, extractSteamRecoveryLink } from '../server/steam-mail.js';
+import { extractSteamGuardCode, extractSteamRecoveryLink, isSteamLoginMessage } from '../server/steam-mail.js';
 
 const mainlandText = 'gracelykrinke9613，\n看起来您正在尝试使用新设备登录。此处是您访问帐户所需的 Steam 令牌验证码：\n请求来自\n中国（大陆）\nNYV2X\n不是您？\n您会收到这封电子邮件，是由于有人试图登录您的 Steam 帐户，且提供了正确的帐户名称与密码。\n如果这不是您尝试登录，建议您重置自己的 Steam 密码。';
 const guard = (text, subject = '您的 Steam 账号：来自新设备的访问') => ({ subject, text });
+
+test('recognizes an unreadable login notice but excludes recovery and ordinary mail', () => {
+  assert.equal(isSteamLoginMessage({ subject: '您的 Steam 帐户：来自新网页或移动设备的访问', html: '<div>Missing content</div>' }), true);
+  assert.equal(isSteamLoginMessage({ subject: 'Steam Guard', text: '[missing code]' }), true);
+  assert.equal(isSteamLoginMessage({ subject: 'Steam purchase receipt', text: 'Thank you for purchasing. Protect your account with Steam Guard.' }), false);
+  assert.equal(isSteamLoginMessage({ subject: 'Steam Guard recovery', text: 'https://help.steampowered.com/en/wizard/VerifyCode?c=ABC123' }), false);
+});
 
 test('simplified Chinese new web/mobile login from Singapore preserves the archived code', () => {
   const text = mainlandText.replace('中国（大陆）', '新加坡').replace('NYV2X', '42KW7');

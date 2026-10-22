@@ -67,6 +67,15 @@ function explicitLineCode(line) {
   return '';
 }
 
+export function isSteamLoginMessage(message) {
+  const subject = contentLines(message?.subject).join('\n');
+  const context = [subject, ...contentLines(message?.text), ...contentLines(message?.html, true)].join('\n');
+  if (!/Steam/i.test(context) || extractSteamRecoveryLink(message)) return false;
+  return guardName.test(subject)
+    || (codeLabel.test(context) && (loginSignal.test(context) || originLabel.test(context)))
+    || /来自新(?:网页|设备|移动设备)|來自新(?:網頁|裝置|行動裝置)|new.{0,30}(?:device|browser|web|mobile)/iu.test(subject);
+}
+
 export function extractSteamGuardCode(message) {
   const subject = contentLines(message?.subject);
   const bodies = [contentLines(message?.text), contentLines(message?.html, true)].filter((lines) => lines.length);
