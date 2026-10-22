@@ -603,15 +603,14 @@ app.post('/api/accounts/:id/mail-code', requireAuth, async (req, res) => {
   const account = db.prepare('SELECT * FROM accounts WHERE id = ?').get(req.params.id);
   if (!account) return res.status(404).json({ error: '账号不存在' });
   const requestAt = now();
-  const windowMinutes = mailLookupWindowMinutes();
   let recipient = '';
   try {
     const mailbox = mailboxForAccount(account);
     recipient = expectedRecipientForAccount(account, mailbox);
-    const result = await mailService.find(mailbox, recipient, { requestAt, windowMinutes });
+    const result = await mailService.find(mailbox, recipient, { requestAt, latest: true });
     if (!result) {
-      audit(req.user.id, 'lookup_failed', 'mail_code', account.id, `获取登录验证码失败 ${account.name} (${account.login})，收件人 ${recipient}，${windowMinutes} 分钟内未找到 Steam 登录邮件`);
-      return res.status(404).json({ error: `最近 ${windowMinutes} 分钟内未找到发给 ${recipient} 的 Steam 登录验证码，请检查收件人设置，或打开收件箱查看邮件` });
+      audit(req.user.id, 'lookup_failed', 'mail_code', account.id, `获取登录验证码失败 ${account.name} (${account.login})，收件人 ${recipient}，未找到 Steam 登录邮件`);
+      return res.status(404).json({ error: `未找到发给 ${recipient} 的 Steam 登录验证码，请检查收件人设置，或打开收件箱查看邮件` });
     }
     audit(req.user.id, 'lookup', 'mail_code', account.id, `获取登录验证码 ${account.name} (${account.login})，收件人 ${recipient}，文件夹 ${result.mailbox}，邮件时间 ${result.receivedAt || '-'}`);
     res.json(result);

@@ -190,6 +190,9 @@ input[type='checkbox'] { accent-color: var(--accent); }
 .admin-account-table .account-row-actions .ghost-action, .user-account-table .account-row-actions .ghost-action { width: auto; flex: 0 0 auto; min-width: 0; display: inline-flex; justify-content: center; align-items: center; border: 1px solid var(--line); padding: 0 9px; gap: 5px; white-space: nowrap; line-height: 1; overflow: visible; }
 .admin-account-table .account-row-actions .icon-btn { flex: 0 0 30px; width: 30px; border: 1px solid var(--line); padding: 0; }
 .account-row-actions .ghost-action svg { flex-shrink: 0; }
+.mail-code-label { display: flex; flex-direction: column; align-items: center; gap: 2px; line-height: 1.1; }
+.mail-code-label strong { font: inherit; font-weight: 700; }
+.mail-code-label small { font: 9px/1.1 system-ui, sans-serif; color: #656c7b; }
 .admin-table-head.user-table, .admin-table-row.user-table { min-width: 620px; }
 .admin-table-row > strong, .copy-value-name { color: #343b4b; font-weight: 550; }
 .copy-value { font-weight: 400; padding: 4px; border-radius: 4px; }

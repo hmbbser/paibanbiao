@@ -5,6 +5,11 @@ import { extractSteamGuardCode, extractSteamRecoveryLink } from '../server/steam
 const mainlandText = 'gracelykrinke9613，\n看起来您正在尝试使用新设备登录。此处是您访问帐户所需的 Steam 令牌验证码：\n请求来自\n中国（大陆）\nNYV2X\n不是您？\n您会收到这封电子邮件，是由于有人试图登录您的 Steam 帐户，且提供了正确的帐户名称与密码。\n如果这不是您尝试登录，建议您重置自己的 Steam 密码。';
 const guard = (text, subject = '您的 Steam 账号：来自新设备的访问') => ({ subject, text });
 
+test('simplified Chinese new web/mobile login from Singapore preserves the archived code', () => {
+  const text = mainlandText.replace('中国（大陆）', '新加坡').replace('NYV2X', '42KW7');
+  assert.equal(extractSteamGuardCode(guard(text, '您的 Steam 帐户：来自新网页或移动设备的访问')), '42KW7');
+});
+
 test('Taiwan account / simplified Chinese mainland login preserves the real NYV2X code', () => {
   assert.equal(extractSteamGuardCode(guard(mainlandText)), 'NYV2X');
   assert.equal(extractSteamRecoveryLink(guard(mainlandText)), '');

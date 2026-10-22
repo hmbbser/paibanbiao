@@ -2143,7 +2143,7 @@ function BookingDetailModal({
       const result = await api<MailCodeResult>(`/api/accounts/${booking.account_id}/mail-code`, { method: 'POST' });
       setMailCode(result);
       await copyTextToClipboard(result.code);
-      showCopyToast('验证码已复制');
+      showCopyToast(mailCodeCopyMessage(result));
     } catch (error) {
       showCopyToast((error as Error).message, 'danger');
     } finally {
@@ -2187,7 +2187,7 @@ function BookingDetailModal({
           <DetailItem label="备注" value={booking.remark || '-'} onCopy={copyField} />
         </div>
         <div className="modal-actions detail-actions account-detail-actions">
-          <button className={`soft-btn login-code-action ${mailCode ? 'has-code' : ''}`} onClick={fetchLoginCode} disabled={mailCodeLoading}><Mail size={16} />{mailCodeLoading ? '获取中...' : (mailCode?.code || '获取登陆验证码')}</button>
+          <button className={`soft-btn login-code-action ${mailCode ? 'has-code' : ''}`} onClick={fetchLoginCode} disabled={mailCodeLoading} title={mailCodeTitle(mailCode)}><Mail size={16} /><MailCodeLabel result={mailCode} loading={mailCodeLoading} /></button>
           <button className={`soft-btn reset-link-action ${passwordResetLink ? 'has-link' : ''}`} onClick={fetchPasswordResetLink} disabled={passwordResetLoading}><KeyRound size={16} />{passwordResetLoading ? '\u83b7\u53d6\u4e2d...' : (passwordResetLink ? '\u94fe\u63a5\u5df2\u590d\u5236' : '\u91cd\u7f6e\u5bc6\u7801')}</button>
           <InboxButton baseUrl={`/api/accounts/${booking.account_id}/messages`} api={api} className="soft-btn" />
           <button className="soft-btn" onClick={copyBooking}><Copy size={16} />复制</button>
@@ -2386,7 +2386,7 @@ function AccountDetailModal({
       const result = await api<MailCodeResult>(`/api/accounts/${account.id}/mail-code`, { method: 'POST' });
       setMailCode(result);
       await copyTextToClipboard(result.code);
-      showCopyToast('验证码已复制');
+      showCopyToast(mailCodeCopyMessage(result));
     } catch (error) {
       showCopyToast((error as Error).message, 'danger');
     } finally {
@@ -2459,7 +2459,7 @@ function AccountDetailModal({
           <DetailItem label="创建时间" value={formatDateTime(account.created_at)} onCopy={copyField} />
         </div>
         <div className="modal-actions detail-actions account-detail-actions">
-          <button className={`soft-btn login-code-action ${mailCode ? 'has-code' : ''}`} onClick={fetchLoginCode} disabled={mailCodeLoading}><Mail size={16} />{mailCodeLoading ? '获取中...' : (mailCode?.code || '获取登陆验证码')}</button>
+          <button className={`soft-btn login-code-action ${mailCode ? 'has-code' : ''}`} onClick={fetchLoginCode} disabled={mailCodeLoading} title={mailCodeTitle(mailCode)}><Mail size={16} /><MailCodeLabel result={mailCode} loading={mailCodeLoading} /></button>
           <button className={`soft-btn reset-link-action ${passwordResetLink ? 'has-link' : ''}`} onClick={fetchPasswordResetLink} disabled={passwordResetLoading}><KeyRound size={16} />{passwordResetLoading ? '\u83b7\u53d6\u4e2d...' : (passwordResetLink ? '\u94fe\u63a5\u5df2\u590d\u5236' : '\u91cd\u7f6e\u5bc6\u7801')}</button>
           <InboxButton baseUrl={`/api/accounts/${account.id}/messages`} api={api} className="soft-btn" />
           <button className="soft-btn" onClick={copyAccount}><Copy size={16} />复制</button>
@@ -2496,6 +2496,20 @@ function DetailItem({ label, value, onCopy }: { label: string; value: string; on
       {content}
     </button>
   );
+}
+
+function mailCodeTitle(result?: MailCodeResult | null) {
+  return result?.receivedAt ? `最新验证码 · 邮件接收时间：${formatDateTime(result.receivedAt)} · 点击重新获取` : '获取最新登录验证码';
+}
+
+function mailCodeCopyMessage(result: MailCodeResult) {
+  return result.receivedAt ? `验证码已复制 · 邮件时间：${formatDateTime(result.receivedAt)}` : '验证码已复制';
+}
+
+function MailCodeLabel({ result, loading }: { result?: MailCodeResult | null; loading: boolean }) {
+  if (loading) return <>获取中...</>;
+  if (!result) return <>登陆验证码</>;
+  return <span className="mail-code-label"><strong>{result.code}</strong>{result.receivedAt && <small>邮件 {formatDateTime(result.receivedAt)}</small>}</span>;
 }
 
 function MailCodeModal({ result, onClose, onCopy }: { result: MailCodeResult; onClose: () => void; onCopy: () => void | Promise<void> }) {
@@ -3206,7 +3220,7 @@ function AccountsPanel({ user, settings, accounts, refresh }: { user: User; sett
       const result = await api<MailCodeResult>(`/api/accounts/${account.id}/mail-code`, { method: 'POST' });
       setMailCodes((current) => ({ ...current, [account.id]: result }));
       await copyTextToClipboard(result.code);
-      showCopyToast('验证码已复制');
+      showCopyToast(mailCodeCopyMessage(result));
     } catch (error) {
       showCopyToast((error as Error).message, 'danger');
     } finally {
@@ -3420,10 +3434,10 @@ function AccountsPanel({ user, settings, accounts, refresh }: { user: User; sett
                 className={`ghost-action login-code-action ${mailCodes[account.id] ? 'has-code' : ''}`}
                 onClick={() => fetchLoginCode(account)}
                 disabled={mailCodeLoadingId === account.id}
-                title="获取登陆验证码"
+                title={mailCodeTitle(mailCodes[account.id])}
               >
                 <Mail size={14} />
-                {mailCodeLoadingId === account.id ? '获取中...' : (mailCodes[account.id]?.code || '登陆验证码')}
+                <MailCodeLabel result={mailCodes[account.id]} loading={mailCodeLoadingId === account.id} />
               </button>
               <button
                 type="button"
@@ -3530,10 +3544,10 @@ function AccountsPanel({ user, settings, accounts, refresh }: { user: User; sett
                   className={`ghost-action login-code-action ${mailCodes[account.id] ? 'has-code' : ''}`}
                   onClick={() => fetchLoginCode(account)}
                   disabled={mailCodeLoadingId === account.id}
-                  title="获取登陆验证码"
+                  title={mailCodeTitle(mailCodes[account.id])}
                 >
                   <Mail size={14} />
-                  {mailCodeLoadingId === account.id ? '获取中...' : (mailCodes[account.id]?.code || '登陆验证码')}
+                  <MailCodeLabel result={mailCodes[account.id]} loading={mailCodeLoadingId === account.id} />
                 </button>
                 <button
                   type="button"
@@ -4604,7 +4618,7 @@ function SettingsPanel({ user, settings, onSettings }: { user: User; settings: A
           </section>
           <section hidden={category !== 'preferences'}>
             <div className="settings-section-heading"><h2>运行与日志</h2><p>设置邮件查询范围和操作日志保留策略。</p></div>
-            <div className="settings-block"><h3>邮件查询</h3><div className="settings-fields"><Field label="邮件匹配时间窗口（分钟）" type="number" value={form.mailLookupWindowMinutes || defaultSettings.mailLookupWindowMinutes || '10'} onChange={mailLookupWindowMinutes => setForm({ ...form, mailLookupWindowMinutes })} /></div><p className="field-help">验证码和重置链接在这个时间范围内匹配，收件箱阅读功能不受限制。</p></div>
+            <div className="settings-block"><h3>邮件查询</h3><div className="settings-fields"><Field label="重置链接匹配时间窗口（分钟）" type="number" value={form.mailLookupWindowMinutes || defaultSettings.mailLookupWindowMinutes || '10'} onChange={mailLookupWindowMinutes => setForm({ ...form, mailLookupWindowMinutes })} /></div><p className="field-help">登录验证码始终按接收时间获取最新匹配邮件，并显示邮件时间；此窗口仅用于重置密码链接。收件箱阅读功能不受限制。</p></div>
             <div className="settings-block"><h3>操作日志</h3><div className="settings-fields">
               <FancySelect label="日志保留时间" value={form.auditRetentionDays || '7'} options={[{ value: '3', label: '保留 3 天' }, { value: '7', label: '保留 7 天' }, { value: '30', label: '保留 30 天' }, { value: 'custom', label: '自定义天数' }]} onChange={auditRetentionDays => setForm({ ...form, auditRetentionDays })} />
               {form.auditRetentionDays === 'custom' && <Field label="自定义保留天数" value={form.auditRetentionCustomDays || ''} onChange={auditRetentionCustomDays => setForm({ ...form, auditRetentionCustomDays })} />}

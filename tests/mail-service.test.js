@@ -52,6 +52,67 @@ test('invalid lookup windows are rejected before contacting either provider', as
   assert.equal(calls, 0);
 });
 
+test('latest code lookup ignores age, filters future mail and recipients, and compares both folders', async () => {
+  const optionsSeen = [];
+  const service = createMailService({ token: async () => 'token', graphFolder: async (_token, folder, options) => {
+    optionsSeen.push(options);
+    return { hasMore: false, messages: folder.label === 'Inbox' ? [
+      message('future', '2026-10-20T10:00:01Z', 'F9F9F'),
+      message('other', '2026-10-20T09:59:00Z', 'E8E8E', { to: ['other@example.com'] }),
+      message('inbox', '2026-10-19T01:00:00Z', 'A1A1A')
+    ] : [message('junk', '2026-10-19T02:00:00Z', 'Z9Z9Z', { mailbox: 'Junk' })] };
+  } });
+  const result = await service.find(mailbox, 'alias@example.com', { requestAt, latest: true });
+  assert.equal(result.code, 'Z9Z9Z');
+  assert.equal(result.receivedAt, '2026-10-19T02:00:00Z');
+  assert.equal(result.mailbox, 'Junk');
+  assert.ok(optionsSeen.every(options => !options.since && options.expectedEmail === 'alias@example.com'));
+  await assert.rejects(service.find(mailbox, 'alias@example.com', { requestAt: '', latest: true }), { code: 'INVALID_LOOKUP_WINDOW' });
+});
+
+test('latest lookup retains incomplete-folder errors and IMAP fallback for the newest code', async () => {
+  const service = createMailService({ token: async () => 'token', graphFolder: async (_token, folder) => {
+    if (folder.label === 'Junk') throw new Error('Graph unavailable');
+    return { hasMore: false, messages: [message('old', '2026-10-18T09:00:00Z')] };
+  }, imapFolder: async (_box, _token, folder, options) => {
+    assert.equal(options.latest, true);
+    return { hasMore: false, messages: [message('new', '2026-10-19T09:00:00Z', 'Z9Z9Z', { mailbox: folder.label })] };
+  } });
+  assert.equal((await service.find(mailbox, 'alias@example.com', { requestAt, latest: true })).code, 'Z9Z9Z');
+  const incomplete = createMailService({ token: async () => 'token', graphFolder: async (_token, folder) => ({
+    hasMore: folder.label === 'Junk', messages: [message(folder.label, '2026-10-19T09:00:00Z')]
+  }) });
+  await assert.rejects(incomplete.find(mailbox, 'alias@example.com', { requestAt, latest: true }), { code: 'MAIL_INCOMPLETE' });
+});
+
+test('Graph latest code lookup passes 100 unrelated messages and stops after the first matching page', async () => {
+  const urls = [];
+  const options = { latest: true, requestAt, expectedEmail: 'alias@example.com', kind: 'code' };
+  const result = await fetchGraphFolder('token', MAIL_FOLDERS[0], options, async url => {
+    urls.push(url);
+    assert.ok(urls.length <= 2, 'Older pages should not be requested after a match');
+    return urls.length === 1
+      ? response(Array.from({ length: 100 }, (_, index) => graphMessage(`noise-${index}`)), 'https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages?$skiptoken=next')
+      : response([graphMessage('code', { receivedDateTime: '2026-10-19T02:37:39Z', body: { contentType: 'text', content: 'Steam Guard code: 42KW7' } })], 'https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages?$skiptoken=older');
+  });
+  assert.equal(urls.length, 2);
+  assert.equal(new URL(urls[0]).searchParams.get('$filter'), `receivedDateTime le ${requestAt}`);
+  assert.equal(result.hasMore, false);
+  assert.equal(scanMessages(result.messages, 'alias@example.com', options).code, '42KW7');
+});
+
+test('Graph latest lookup exhausts pages when no code exists and rejects repeated pagination', async () => {
+  let calls = 0;
+  const options = { latest: true, requestAt, expectedEmail: 'alias@example.com', kind: 'code' };
+  const result = await fetchGraphFolder('token', MAIL_FOLDERS[0], options, async () => {
+    calls += 1;
+    return response([graphMessage(String(calls))], calls === 1 ? 'https://graph.microsoft.com/v1.0/me/messages?$skiptoken=next' : undefined);
+  });
+  assert.equal(calls, 2);
+  assert.equal(scanMessages(result.messages, 'alias@example.com', options), null);
+  await assert.rejects(fetchGraphFolder('token', MAIL_FOLDERS[0], options, async () => response([], 'https://graph.microsoft.com/v1.0/me/messages?$skiptoken=loop')), /无法确认最新验证码/);
+});
+
 test('partial folder failure produces browsing warnings and prevents automatic latest lookup', async () => {
   const service = createMailService({ token: async () => 'token', graphFolder: async (_token, folder) => {
     if (folder.label === 'Junk') throw new Error('private upstream details');
@@ -196,6 +257,48 @@ test('IMAP latest-100 selection uses INTERNALDATE, not UID or sender Date', asyn
   assert.equal(bodyIds.includes(101), false);
   assert.equal(configs[0].tls, true);
   assert.notEqual(configs[0].tlsOptions?.rejectUnauthorized, false);
+});
+
+test('IMAP latest lookup scans older body batches by receipt time and stops after a matching code', async () => {
+  const bodyIds = [];
+  class LatestImap extends EventEmitter {
+    connect() { queueMicrotask(() => this.emit('ready')); }
+    getBoxes(callback) { callback(null, { Inbox: { attribs: ['\\Inbox'] } }); }
+    openBox(_name, readOnly, callback) { assert.equal(readOnly, true); callback(null, { uidvalidity: 99 }); }
+    search(criteria, callback) { assert.deepEqual(criteria, ['ALL']); callback(null, Array.from({ length: 250 }, (_, i) => 250 - i)); }
+    fetch(ids, options) {
+      const fetcher = new EventEmitter();
+      const withBody = options.bodies === '';
+      if (withBody) bodyIds.push(...ids);
+      assert.equal(options.markSeen, false);
+      queueMicrotask(() => {
+        for (const uid of ids) {
+          const item = new EventEmitter();
+          fetcher.emit('message', item);
+          item.emit('attributes', { uid, date: new Date(Date.parse(requestAt) - uid * 60_000) });
+          if (withBody) item.emit('body', Readable.from(String(uid)));
+          item.emit('end');
+        }
+        fetcher.emit('end');
+      });
+      return fetcher;
+    }
+    end() { queueMicrotask(() => this.emit('end')); }
+    destroy() {}
+  }
+  const options = { latest: true, requestAt, expectedEmail: 'alias@example.com', kind: 'code' };
+  const result = await fetchImapFolder(mailbox, 'token', MAIL_FOLDERS[0], options, {
+    Imap: LatestImap, simpleParser: async stream => {
+      let text = '';
+      for await (const chunk of stream) text += chunk;
+      return { text: text === '101' ? 'Steam Guard code: 42KW7' : 'Unrelated message', to: { value: [{ address: 'alias@example.com' }] } };
+    }
+  });
+  assert.equal(bodyIds.length, 200);
+  assert.equal(bodyIds.includes(101), true);
+  assert.equal(bodyIds.includes(201), false);
+  assert.equal(result.hasMore, false);
+  assert.equal(scanMessages(result.messages, 'alias@example.com', options).code, '42KW7');
 });
 
 test('browser recipient filter is applied after explicit per-folder scope', async () => {

@@ -45,6 +45,10 @@ export function sortMessages(messages) {
 
 function lookupOptions(options) {
   const requestAt = options.requestAt ?? new Date().toISOString();
+  if (options.latest === true) {
+    if (!Number.isFinite(Date.parse(requestAt))) throw mailError('邮件查询时间无效', 'INVALID_LOOKUP_WINDOW', 400);
+    return { requestAt, latest: true };
+  }
   const windowMinutes = Number(options.windowMinutes ?? 10);
   const since = new Date(Date.parse(requestAt) - windowMinutes * 60_000);
   if (!Number.isFinite(Date.parse(requestAt)) || !Number.isFinite(windowMinutes) || windowMinutes <= 0 || !Number.isFinite(since.getTime())) {
@@ -57,7 +61,10 @@ export function scanMessages(messages, expectedEmail, options, kind = 'code') {
   const extractor = kind === 'link' ? extractSteamRecoveryLink : extractSteamGuardCode;
   for (const message of sortMessages(messages)) {
     if (!recipientMatches(message, expectedEmail)) continue;
-    if (!withinLookupWindow(message.receivedAt, options.requestAt, options.windowMinutes)) continue;
+    if (options.latest) {
+      const receivedTime = Date.parse(message.receivedAt);
+      if (!Number.isFinite(receivedTime) || receivedTime > Date.parse(options.requestAt)) continue;
+    } else if (!withinLookupWindow(message.receivedAt, options.requestAt, options.windowMinutes)) continue;
     const value = extractor(message);
     if (value) return {
       [kind]: value, email: normalizeEmail(expectedEmail), recipient: normalizeEmail(expectedEmail),
@@ -103,6 +110,7 @@ export async function fetchGraphFolder(accessToken, folder, options = {}, fetchI
   url.searchParams.set('$orderby', 'receivedDateTime desc');
   url.searchParams.set('$select', 'id,internetMessageId,subject,body,receivedDateTime,from,toRecipients,ccRecipients,internetMessageHeaders');
   if (options.since) url.searchParams.set('$filter', `receivedDateTime ge ${options.since}`);
+  else if (options.latest) url.searchParams.set('$filter', `receivedDateTime le ${options.requestAt}`);
   let next = url.toString();
   const messages = [];
   const seenPages = new Set();
@@ -111,7 +119,9 @@ export async function fetchGraphFolder(accessToken, folder, options = {}, fetchI
     if (pageUrl.origin !== 'https://graph.microsoft.com' || !pageUrl.pathname.startsWith('/v1.0/me/')) {
       throw mailError('邮箱分页地址无效，无法确认最新邮件');
     }
-    if (seenPages.has(next) || seenPages.size >= 100) throw mailError('查询时间范围内邮件过多，无法确认最新邮件，请缩短查询时间范围');
+    if (seenPages.has(next) || seenPages.size >= 100) throw mailError(options.latest
+      ? '邮箱邮件过多，无法确认最新验证码，请整理邮箱后重试'
+      : '查询时间范围内邮件过多，无法确认最新邮件，请缩短查询时间范围');
     seenPages.add(next);
     let response;
     let data;
@@ -135,7 +145,10 @@ export async function fetchGraphFolder(accessToken, folder, options = {}, fetchI
       });
     }
     next = data['@odata.nextLink'] || '';
-    if (!options.since && messages.length >= BROWSE_LIMIT) return { messages: sortMessages(messages).slice(0, BROWSE_LIMIT), hasMore: Boolean(next) || messages.length > BROWSE_LIMIT };
+    // Graph orders pages by receipt time. Once this folder has a match, every
+    // unread page is older; the other folder is checked independently.
+    if (options.latest && scanMessages(messages, options.expectedEmail, options, options.kind)) return { messages: sortMessages(messages), hasMore: false };
+    if (!options.latest && !options.since && messages.length >= BROWSE_LIMIT) return { messages: sortMessages(messages).slice(0, BROWSE_LIMIT), hasMore: Boolean(next) || messages.length > BROWSE_LIMIT };
   }
   return { messages: sortMessages(messages), hasMore: false };
 }
@@ -258,13 +271,15 @@ export async function fetchImapFolder(mailbox, accessToken, folder, options = {}
         for (let start = 0; start < ids.length; start += 1000) {
           metadata.push(...await fetchImapBatch(imap, ids.slice(start, start + 1000), false, simpleParser));
         }
-        const ordered = metadata.filter((row) => !options.since || new Date(row.attributes.date).getTime() >= Date.parse(options.since))
+        const ordered = metadata.filter((row) => (!options.since || new Date(row.attributes.date).getTime() >= Date.parse(options.since))
+          && (!options.latest || new Date(row.attributes.date).getTime() <= Date.parse(options.requestAt)))
           .sort((a, b) => new Date(b.attributes.date).getTime() - new Date(a.attributes.date).getTime() || b.attributes.uid - a.attributes.uid);
-        const selected = options.since ? ordered : ordered.slice(0, BROWSE_LIMIT);
+        const selected = options.since || options.latest ? ordered : ordered.slice(0, BROWSE_LIMIT);
         const messages = [];
         for (let start = 0; start < selected.length; start += 100) {
           const rows = await fetchImapBatch(imap, selected.slice(start, start + 100).map((row) => row.attributes.uid), true, simpleParser);
           messages.push(...rows.map(({ mail, attributes }) => normalizeImapMessage(mail, attributes, { ...folder, path: folderPath }, box.uidvalidity)));
+          if (options.latest && scanMessages(messages, options.expectedEmail, options, options.kind)) break;
         }
         finish(null, { messages: sortMessages(messages), hasMore: ordered.length > selected.length });
       } catch (error) { finish(error); }
@@ -317,7 +332,7 @@ export function createMailService(dependencies = {}) {
     },
     async find(mailbox, expectedEmail, options = {}, kind = 'code') {
       const window = lookupOptions(options);
-      const result = await collect(mailbox, { ...window, requireComplete: true });
+      const result = await collect(mailbox, { ...window, expectedEmail, kind, requireComplete: true });
       return scanMessages(result.messages, expectedEmail, window, kind);
     }
   };
