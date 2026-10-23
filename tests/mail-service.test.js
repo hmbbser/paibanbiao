@@ -86,16 +86,17 @@ test('latest lookup retains incomplete-folder errors and IMAP fallback for the n
   await assert.rejects(incomplete.find(mailbox, 'alias@example.com', { requestAt, latest: true }), { code: 'MAIL_INCOMPLETE' });
 });
 
-test('latest code rejects historical mail, repeat mail and unreadable latest login mail', async () => {
+test('latest code rejects historical and unreadable mail but allows repeated reads of fresh mail', async () => {
   let records = [message('old', '2026-10-20T08:49:37Z', 'RTW4X')];
   const service = createMailService({ token: async () => 'token', graphFolder: async (_token, folder) => ({
     hasMore: false, messages: folder.label === 'Inbox' ? records : []
   }) });
   await assert.rejects(service.find(mailbox, 'alias@example.com', { requestAt, latest: true }), { code: 'MAIL_CODE_STALE', status: 409, receivedAt: records[0].receivedAt });
   records = [message('fresh', '2026-10-20T09:59:00Z')];
-  await assert.rejects(service.find(mailbox, 'alias@example.com', { requestAt, latest: true, afterReceivedAt: records[0].receivedAt }), { code: 'MAIL_CODE_NOT_NEW' });
-  assert.ok(await service.find(mailbox, 'alias@example.com', { requestAt, latest: true, afterReceivedAt: '2026-10-20T09:58:59Z' }));
-  await assert.rejects(service.find(mailbox, 'alias@example.com', { requestAt, latest: true, afterReceivedAt: 'invalid' }), { code: 'INVALID_LOOKUP_WINDOW' });
+  const options = { requestAt, latest: true, afterReceivedAt: records[0].receivedAt };
+  assert.equal((await service.find(mailbox, 'alias@example.com', options)).code, 'A1B2C');
+  assert.equal((await service.find(mailbox, 'alias@example.com', options)).code, 'A1B2C');
+  assert.equal((await service.find(mailbox, 'alias@example.com', { ...options, afterReceivedAt: 'invalid' })).code, 'A1B2C');
   records.unshift(message('unreadable', '2026-10-20T09:59:30Z', '', { subject: '您的 Steam 帐户：来自新网页或移动设备的访问', text: 'Body temporarily missing' }));
   await assert.rejects(service.find(mailbox, 'alias@example.com', { requestAt, latest: true }), { code: 'MAIL_CODE_UNREADABLE', status: 422 });
 });
@@ -493,7 +494,7 @@ test('code route returns typed stale, missing and unreadable errors and keeps ev
       else assert.equal(body.code, code);
     }
     assert.equal(optionsSeen.length, 4);
-    assert.ok(optionsSeen.every(options => options.latest && options.requestAt === requestAt && options.afterReceivedAt === '2026-10-20T09:58:00Z'));
+    assert.ok(optionsSeen.every(options => options.latest && options.requestAt === requestAt && !('afterReceivedAt' in options)));
     assert.equal(audits.length, 4);
   } finally { await new Promise(resolve => server.close(resolve)); }
 });

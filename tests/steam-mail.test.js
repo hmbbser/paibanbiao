@@ -17,6 +17,11 @@ test('simplified Chinese new web/mobile login from Singapore preserves the archi
   assert.equal(extractSteamGuardCode(guard(text, '您的 Steam 帐户：来自新网页或移动设备的访问')), '42KW7');
 });
 
+test('the reported Singapore login template extracts J4WF6', () => {
+  const text = mainlandText.replace('中国（大陆）', '新加坡').replace('NYV2X', 'J4WF6');
+  assert.equal(extractSteamGuardCode(guard(text, '您的 Steam 帐户：来自新网页或移动设备的访问')), 'J4WF6');
+});
+
 test('Taiwan account / simplified Chinese mainland login preserves the real NYV2X code', () => {
   assert.equal(extractSteamGuardCode(guard(mainlandText)), 'NYV2X');
   assert.equal(extractSteamRecoveryLink(guard(mainlandText)), '');

@@ -49,11 +49,7 @@ function lookupOptions(options) {
   const requestAt = options.requestAt ?? new Date().toISOString();
   if (options.latest === true) {
     if (!Number.isFinite(Date.parse(requestAt))) throw mailError('邮件查询时间无效', 'INVALID_LOOKUP_WINDOW', 400);
-    const afterReceivedAt = options.afterReceivedAt;
-    if (afterReceivedAt != null && (typeof afterReceivedAt !== 'string' || !Number.isFinite(Date.parse(afterReceivedAt)))) {
-      throw mailError('上次验证码邮件时间无效', 'INVALID_LOOKUP_WINDOW', 400);
-    }
-    return { requestAt, latest: true, ...(afterReceivedAt != null ? { afterReceivedAt } : {}) };
+    return { requestAt, latest: true };
   }
   const windowMinutes = Number(options.windowMinutes ?? 10);
   const since = new Date(Date.parse(requestAt) - windowMinutes * 60_000);
@@ -79,8 +75,6 @@ export function scanMessages(messages, expectedEmail, options, kind = 'code') {
         let error;
         if (options.maxAgeMinutes && !withinLookupWindow(message.receivedAt, options.requestAt, options.maxAgeMinutes)) {
           error = mailError(`最新验证码邮件已超过 ${options.maxAgeMinutes} 分钟，请在 Steam 请求新验证码后重试`, 'MAIL_CODE_STALE', 409);
-        } else if (options.afterReceivedAt && Date.parse(message.receivedAt) <= Date.parse(options.afterReceivedAt)) {
-          error = mailError('尚未收到比上次更新的验证码邮件，请在 Steam 请求新验证码', 'MAIL_CODE_NOT_NEW', 409);
         } else if (!value) {
           error = mailError('最新 Steam 登录邮件无法提取验证码，请打开收件箱查看；不会返回旧验证码', 'MAIL_CODE_UNREADABLE', 422);
         }

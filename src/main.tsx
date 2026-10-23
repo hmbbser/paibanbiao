@@ -2150,18 +2150,20 @@ function BookingDetailModal({
     setMailCodeLoading(true);
     setMailCode(null);
     setMailCodeError('');
+    let result: MailCodeResult;
     try {
-      const result = await lookupMailCode(booking.account_id);
+      result = await lookupMailCode(booking.account_id);
       setMailCode(result);
-      await copyTextToClipboard(result.code);
-      showCopyToast(mailCodeCopyMessage(result));
     } catch (error) {
       if ((error as Error).name === 'AbortError') return;
       setMailCodeError((error as Error).message);
       showCopyToast((error as Error).message, 'danger');
+      return;
     } finally {
       setMailCodeLoading(false);
     }
+    await copyTextToClipboard(result.code);
+    showCopyToast(mailCodeCopyMessage(result));
   }
 
   async function fetchPasswordResetLink() {
@@ -2398,18 +2400,20 @@ function AccountDetailModal({
     setMailCodeLoading(true);
     setMailCode(null);
     setMailCodeError('');
+    let result: MailCodeResult;
     try {
-      const result = await lookupMailCode(account.id);
+      result = await lookupMailCode(account.id);
       setMailCode(result);
-      await copyTextToClipboard(result.code);
-      showCopyToast(mailCodeCopyMessage(result));
     } catch (error) {
       if ((error as Error).name === 'AbortError') return;
       setMailCodeError((error as Error).message);
       showCopyToast((error as Error).message, 'danger');
+      return;
     } finally {
       setMailCodeLoading(false);
     }
+    await copyTextToClipboard(result.code);
+    showCopyToast(mailCodeCopyMessage(result));
   }
 
   async function fetchPasswordResetLink() {
@@ -2517,7 +2521,7 @@ function DetailItem({ label, value, onCopy }: { label: string; value: string; on
 }
 
 function mailCodeTitle(result?: MailCodeResult | null) {
-  return result?.receivedAt ? `邮件接收时间：${formatDateTime(result.receivedAt)} · 点击等待更新的验证码` : '获取最近 5 分钟内的验证码；新邮件未到时最多等待 2 分钟';
+  return result?.receivedAt ? `邮件接收时间：${formatDateTime(result.receivedAt)} · 点击重新获取` : '每次点击查询一次邮箱，获取最近 5 分钟内的最新验证码';
 }
 
 function mailCodeCopyMessage(result: MailCodeResult) {
@@ -2532,14 +2536,14 @@ function MailCodeLabel({ result, loading, error }: { result?: MailCodeResult | n
     const timer = window.setTimeout(() => setCurrentTime(Date.now()), Math.max(0, Date.parse(result.expiresAt) - Date.now()));
     return () => window.clearTimeout(timer);
   }, [result]);
-  if (loading) return <span className="mail-code-label"><strong>等待最新验证码…</strong><small>请在 Steam 发送 · 最多 2 分钟</small></span>;
+  if (loading) return <span className="mail-code-label"><strong>获取中…</strong><small>正在查询邮箱</small></span>;
   if (error) {
     const hint = error.includes('无法提取验证码') ? '最新邮件解析失败，请打开收件箱'
-      : error.includes('仍未收到新验证码') ? '未收到新邮件，请在 Steam 重新发送' : error;
+      : error.includes('未找到 Steam') ? '未找到验证码，发送后点击重试' : error;
     return <span className="mail-code-label mail-code-error" role="alert"><strong>获取失败 · 点击重试</strong><small>{hint}</small></span>;
   }
   if (!result) return <>登陆验证码</>;
-  if (Date.parse(result.expiresAt) <= Math.max(currentTime, Date.now())) return <span className="mail-code-label"><strong>验证码已过旧</strong><small>点击等待新邮件</small></span>;
+  if (Date.parse(result.expiresAt) <= Math.max(currentTime, Date.now())) return <span className="mail-code-label"><strong>验证码已过旧</strong><small>重新发送后点击获取</small></span>;
   return <span className="mail-code-label"><strong>{result.code}</strong>{result.receivedAt && <small>邮件 {formatDateTime(result.receivedAt)}</small>}</span>;
 }
 
@@ -3099,7 +3103,7 @@ function AccountsPanel({ user, settings, accounts, refresh }: { user: User; sett
   const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [toggleLoadingId, setToggleLoadingId] = useState('');
-  const [mailCodeLoadingId, setMailCodeLoadingId] = useState('');
+  const [mailCodeLoadingIds, setMailCodeLoadingIds] = useState<Record<string, boolean>>({});
   const [mailCodes, setMailCodes] = useState<Record<string, MailCodeResult>>({});
   const [mailCodeErrors, setMailCodeErrors] = useState<Record<string, string>>({});
   const lookupMailCode = useMailCodeLookup();
@@ -3247,21 +3251,23 @@ function AccountsPanel({ user, settings, accounts, refresh }: { user: User; sett
   }
 
   async function fetchLoginCode(account: Account) {
-    setMailCodeLoadingId(account.id);
+    setMailCodeLoadingIds((current) => ({ ...current, [account.id]: true }));
     setMailCodes((current) => { const next = { ...current }; delete next[account.id]; return next; });
     setMailCodeErrors((current) => { const next = { ...current }; delete next[account.id]; return next; });
+    let result: MailCodeResult;
     try {
-      const result = await lookupMailCode(account.id);
+      result = await lookupMailCode(account.id);
       setMailCodes((current) => ({ ...current, [account.id]: result }));
-      await copyTextToClipboard(result.code);
-      showCopyToast(mailCodeCopyMessage(result));
     } catch (error) {
       if ((error as Error).name === 'AbortError') return;
       setMailCodeErrors((current) => ({ ...current, [account.id]: (error as Error).message }));
       showCopyToast((error as Error).message, 'danger');
+      return;
     } finally {
-      setMailCodeLoadingId('');
+      setMailCodeLoadingIds((current) => { const next = { ...current }; delete next[account.id]; return next; });
     }
+    await copyTextToClipboard(result.code);
+    showCopyToast(mailCodeCopyMessage(result));
   }
 
   async function fetchPasswordResetLink(account: Account) {
@@ -3469,11 +3475,11 @@ function AccountsPanel({ user, settings, accounts, refresh }: { user: User; sett
                 type="button"
                 className={`ghost-action login-code-action ${mailCodes[account.id] ? 'has-code' : ''}`}
                 onClick={() => fetchLoginCode(account)}
-                disabled={Boolean(mailCodeLoadingId)}
+                disabled={Boolean(mailCodeLoadingIds[account.id])}
                 title={mailCodeErrors[account.id] || mailCodeTitle(mailCodes[account.id])}
               >
                 <Mail size={14} />
-                <MailCodeLabel result={mailCodes[account.id]} loading={mailCodeLoadingId === account.id} error={mailCodeErrors[account.id]} />
+                <MailCodeLabel result={mailCodes[account.id]} loading={Boolean(mailCodeLoadingIds[account.id])} error={mailCodeErrors[account.id]} />
               </button>
               <button
                 type="button"
@@ -3579,11 +3585,11 @@ function AccountsPanel({ user, settings, accounts, refresh }: { user: User; sett
                   type="button"
                   className={`ghost-action login-code-action ${mailCodes[account.id] ? 'has-code' : ''}`}
                   onClick={() => fetchLoginCode(account)}
-                  disabled={Boolean(mailCodeLoadingId)}
+                  disabled={Boolean(mailCodeLoadingIds[account.id])}
                   title={mailCodeErrors[account.id] || mailCodeTitle(mailCodes[account.id])}
                 >
                   <Mail size={14} />
-                  <MailCodeLabel result={mailCodes[account.id]} loading={mailCodeLoadingId === account.id} error={mailCodeErrors[account.id]} />
+                  <MailCodeLabel result={mailCodes[account.id]} loading={Boolean(mailCodeLoadingIds[account.id])} error={mailCodeErrors[account.id]} />
                 </button>
                 <button
                   type="button"
@@ -4654,7 +4660,7 @@ function SettingsPanel({ user, settings, onSettings }: { user: User; settings: A
           </section>
           <section hidden={category !== 'preferences'}>
             <div className="settings-section-heading"><h2>运行与日志</h2><p>设置邮件查询范围和操作日志保留策略。</p></div>
-            <div className="settings-block"><h3>邮件查询</h3><div className="settings-fields"><Field label="重置链接匹配时间窗口（分钟）" type="number" value={form.mailLookupWindowMinutes || defaultSettings.mailLookupWindowMinutes || '10'} onChange={mailLookupWindowMinutes => setForm({ ...form, mailLookupWindowMinutes })} /></div><p className="field-help">登录验证码只接受最近 5 分钟内最新的登录邮件，重复获取时等待比上次更新的邮件，最多等待 2 分钟；此窗口仅用于重置密码链接。收件箱阅读功能不受限制。</p></div>
+            <div className="settings-block"><h3>邮件查询</h3><div className="settings-fields"><Field label="重置链接匹配时间窗口（分钟）" type="number" value={form.mailLookupWindowMinutes || defaultSettings.mailLookupWindowMinutes || '10'} onChange={mailLookupWindowMinutes => setForm({ ...form, mailLookupWindowMinutes })} /></div><p className="field-help">登录验证码每次点击查询一次邮箱，获取最近 5 分钟内的最新登录邮件；没找到会提示，可再次点击获取。此窗口仅用于重置密码链接。收件箱阅读功能不受限制。</p></div>
             <div className="settings-block"><h3>操作日志</h3><div className="settings-fields">
               <FancySelect label="日志保留时间" value={form.auditRetentionDays || '7'} options={[{ value: '3', label: '保留 3 天' }, { value: '7', label: '保留 7 天' }, { value: '30', label: '保留 30 天' }, { value: 'custom', label: '自定义天数' }]} onChange={auditRetentionDays => setForm({ ...form, auditRetentionDays })} />
               {form.auditRetentionDays === 'custom' && <Field label="自定义保留天数" value={form.auditRetentionCustomDays || ''} onChange={auditRetentionCustomDays => setForm({ ...form, auditRetentionCustomDays })} />}

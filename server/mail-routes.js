@@ -9,8 +9,8 @@ export function registerMailCodeRoute(app, { requireAuth, db, mailService, mailb
     try {
       const mailbox = mailboxForAccount(account);
       recipient = expectedRecipientForAccount(account, mailbox);
-      const result = await mailService.find(mailbox, recipient, { requestAt: now(), latest: true, afterReceivedAt: req.body?.afterReceivedAt });
-      if (!result) throw mailError('尚未收到 Steam 登录验证码，请在 Steam 请求新验证码', 'MAIL_CODE_MISSING', 404);
+      const result = await mailService.find(mailbox, recipient, { requestAt: now(), latest: true });
+      if (!result) throw mailError('未找到 Steam 登录验证码，请在 Steam 发送后再点击获取', 'MAIL_CODE_MISSING', 404);
       audit(req.user.id, 'lookup', 'mail_code', account.id, `获取登录验证码 ${account.name} (${account.login})，收件人 ${recipient}，文件夹 ${result.mailbox}，邮件时间 ${result.receivedAt || '-'}`);
       res.json(result);
     } catch (error) {
